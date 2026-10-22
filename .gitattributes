@@ -1,0 +1,8 @@
+# 仓库内一律 LF，Windows 检出也不做 CRLF 转换
+* text=auto eol=lf
+
+# 二进制，不做换行转换
+*.zip binary
+*.png binary
+*.jpg binary
+*.ico binary

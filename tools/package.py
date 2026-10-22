@@ -8,8 +8,9 @@
     python tools/package.py                 # 输出到 ./dist/ski-trip-planner.zip
     python tools/package.py -o /tmp/dist    # 指定输出目录
 
-原则：只打包「被 git 跟踪的文件 + 未被忽略的新文件」，
-并以 skill 名（取自 SKILL.md frontmatter）作为 zip 内的顶层目录。
+原则：从「被 git 跟踪的文件 + 未被忽略的新文件」里按白名单取
+（SKILL.md / LICENSE / scripts/ / references/），并以 skill 名
+（取自 SKILL.md frontmatter）作为 zip 内的顶层目录。
 """
 
 from __future__ import annotations
@@ -22,7 +23,12 @@ from pathlib import Path
 
 # 仅开发期使用、不该出现在分发产物里的文件与前缀
 EXCLUDE_PREFIXES = ("tools/",)
-EXCLUDE_FILES = {".gitignore", "README.md"}
+EXCLUDE_FILES = {".gitignore", ".gitattributes", "README.md"}
+
+# 分发产物只允许这些入口：白名单之外的文件（本地 config、检索产物、
+# 测试快照等）一律不进包，避免开发目录里的临时文件被顺手打进去。
+ALLOW_FILES = {"SKILL.md", "LICENSE"}
+ALLOW_PREFIXES = ("scripts/", "references/")
 
 
 def skill_name_of(root: Path) -> str:
@@ -49,7 +55,8 @@ def repo_root() -> Path:
 
 
 def list_files(root: Path) -> list[Path]:
-    """已跟踪 + 未忽略的新文件，NUL 分隔以兼容非 ASCII 文件名。"""
+    """已跟踪 + 未忽略的新文件，NUL 分隔以兼容非 ASCII 文件名。
+    再经白名单过滤，只保留 SKILL.md / LICENSE / scripts / references。"""
     out = subprocess.run(
         ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
         cwd=root, capture_output=True, check=True,
@@ -61,6 +68,8 @@ def list_files(root: Path) -> list[Path]:
         if any(n.startswith(pref) for pref in EXCLUDE_PREFIXES):
             continue
         if n in EXCLUDE_FILES:
+            continue
+        if n not in ALLOW_FILES and not n.startswith(ALLOW_PREFIXES):
             continue
         if (root / p).is_file():
             files.append(p)

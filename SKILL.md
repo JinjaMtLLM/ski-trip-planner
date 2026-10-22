@@ -1,7 +1,7 @@
 ---
 name: ski-trip-planner
 description: 滑雪行程性价比规划。把机票、税费、住宿折算成「元/每小时可滑行时间」，枚举请假 0/0.5/1/2 天的出发与返程组合，输出可筛选排序的 HTML 报告。当用户要规划滑雪行程、比较飞往雪场的航班方案、判断请假值不值、计算单日滑雪成本、或在多个周末之间做取舍时使用（ski trip planning / ski weekend / cost per ski day）。内置航班检索与机场到雪场车程查询。
-agent_created: true
+license: AGPL-3.0
 ---
 
 # 滑雪行程性价比规划
@@ -101,7 +101,7 @@ node scripts/flight_query.js \
 - 输出为 JSON 数组，字段与 config 的航班对象一致，直接拼进 `scenarios[].out` / `.ret`。
 - 同一航班号在同一日期出现多条时以最低价为准。
 - 跨日航班由脚本自动填 `arrDate`，人工核对一遍首末条。
-- 需要人工检查解析结果时加 `--raw` 看原始返回。
+- 需要人工检查解析结果时加 `--raw` 看原始返回。问道接口非公开文档化，返回格式随时可能调整；解析不出航班时按 `--raw` 的原文手工整理成 config 的航班数组。
 
 ### 第 4 步：生成报告
 

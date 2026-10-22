@@ -22,6 +22,10 @@ config.local.json
 tmp/
 .tmp/
 
+# ---- planner 的输入 config 与检索中间产物（含查到的票价，不入库）----
+# 根目录不放 json：config 与航班数据都在本地生成
+/*.json
+
 # ---- 密钥与本地环境 ----
 .env
 .env.*

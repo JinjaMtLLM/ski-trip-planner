@@ -11,6 +11,7 @@ No resort, airport, date or price is hard-coded. Every number comes from the use
 ## Requirements
 
 - Node.js ≥ 18 (uses built-in `fetch`, no npm dependencies)
+- Python 3.9+ — only for `tools/package.py`
 - Two API keys, read from environment variables only:
 
 | Variable | Service | Used for | Get it at |
@@ -110,7 +111,21 @@ node scripts/planner.js config.json --csv
 ## Development
 
 ```bash
-python tools/package.py     # -> dist/ski-trip-planner.zip, tracked files only
+python tools/package.py     # -> dist/ski-trip-planner.zip, whitelisted files only
 ```
 
-The bundler uses the git file list, so `.gitignore` is respected and `.git/` never ends up in the archive. `tools/`, `.gitignore` and this README are dev-only and excluded.
+The bundler uses the git file list, so `.gitignore` is respected and `.git/` never ends up in the archive. `tools/`, `.gitignore` and this README are dev-only and excluded; every other file must sit under `scripts/` or `references/` to be packaged at all, so local `config.json` files and query dumps can never slip into a release.
+
+`SKILL.md`, the references and the code comments are written in Chinese — that is the language of the agent-facing instructions. This README is in English for anyone browsing the repo.
+
+## Before you rely on it
+
+- Fares and schedules come from third-party services as point-in-time snapshots. Prices move, connections get re-timed. Verify every itinerary on the booking page before paying.
+- The Wendao token is rate-limited — roughly 30 queries per token per day. Plan the query budget per date and direction.
+- Resort hours, lift tickets and lodging prices are inputs you supply; the skill does not verify them.
+- Flight data comes from the endpoint behind Ctrip's Wendao skill (`externalcallback.ctrip.com/skills/api/crew/skillhub/searchInfo`). That endpoint is **not publicly documented** and is not a supported public API — its response format can change, it can start demanding new credentials, or it can stop answering entirely, at any time and without notice. If that happens the flight-search step breaks and no other input can substitute for it; `planner.js` still runs on a `config.json` you assemble by hand.
+- This is an unofficial tool. It is not affiliated with Ctrip or Amap, and use of their services is governed by their own terms.
+
+## License
+
+AGPL-3.0 — see [LICENSE](LICENSE). Copyright (C) 2026 SardineFish.
