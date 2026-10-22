@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * wendao.js — 携程问道航班检索封装
+ * wendao.js — 携程问道请求与解析封装
  *
- * 被 flight_query.js（单条航线，输出 config 数组）与 airport_scan.js（多机场横向对比）共用。
+ * 主流程不经过本文件：机场粗筛与骨架摸底按 references/wendao-prompts.md
+ * 直接发原始 HTTP 请求，不封 CLI。本文件留给需要编程调用的场景
+ * （例如批量核对航班号、或把问道结果做结构化对比）。
  * key 仅从环境变量 WENDAO_API_KEY 读取，不接受命令行参数。
  *
  * 解析策略：不依赖返回版式。逐行扫描「HH:MM」判断角色（起飞/到达），

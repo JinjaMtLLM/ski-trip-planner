@@ -21,8 +21,8 @@
   "destAirport": {
     "code": "<到达机场三字码>",   // 多机场时写成 "AAA/BBB"
     "name": "<到达机场名>",       // 多机场时写成 "A 机场 / B 机场"
-    // 机场→雪场单程分钟数，含预留。由 amap_route.js / airport_scan.js 的
-    // toResortMinutes 直接填入，或用户口述 + 你说明的预留量。
+    // 机场→雪场单程分钟数，含预留。由 amap_route.js 的 toResortMinutes
+    // 直接填入，或用户口述 + 你说明的预留量。
     // 多机场且车程不同时取最长的一段，并在报告里说明。
     "toResortMinutes": 120
   },
@@ -90,13 +90,17 @@
   "no": "XX1234",         // 航班号；中转写 "XX1234+YY5678"
   "tag": "直飞",           // "直飞" 或中转城市名，如 "某城转"
   "seg": 2,               // 航段数；省略时按 tag 推断（直飞=1，其余=2）
+  "tax": 140,             // 可选，实际机建+燃油；有则覆盖 taxPerSegment × seg
+  "seats": 9,             // 可选，余票数，仅作参考展示
+  "stopMinutes": 1400,    // 可选，中转停留分钟数
   "airport": "XXX"        // 可选，该段实际使用的到达机场三字码，多机场方案时填
 }
 ```
 
 要点：
 
-- **`price` 写裸票价**，税费由 `taxPerSegment × seg` 自动叠加。
+- **`price` 写裸票价**。税费默认由 `taxPerSegment × seg` 叠加；若航班对象带了 `tax`（`flight_query.js` 从飞常准返回的机建 + 燃油写入），则以实际值为准，不再乘默认值。
+- **`flight_query.js` 已自动填好 `price` / `tax` / `arrDate` / `seg` / `tag`**，直接粘进 config 即可，不用手改税费口径。
 - **跨日航班写 `arrDate`**，值为落地日。
 - **中转的 `dep` 写第一段起飞、`arr` 写末段落地**，请假判定看的就是这两个时刻。
 - `seg` 一般省略；某条中转实际只算 1 段时显式指定。

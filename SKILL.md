@@ -29,50 +29,48 @@ license: AGPL-3.0
 node scripts/doctor.js
 ```
 
-输出两个 key 的状态。缺 `WENDAO_API_KEY` 时先按「API Key 配置」引导用户完成设置，再进入第 3 步；缺 `AMAP_API_KEY` 时按「API Key 配置」引导，用户不提供则走第 1 步第 4 条降级。
+输出三个 key 的状态。`VARIFLIGHT_MCP_KEY` 是必需的航班与票价主数据源，缺它先按「API Key 配置」引导用户完成设置，再进入第 3 步；缺 `AMAP_API_KEY` 时按「API Key 配置」引导，用户不提供则走第 1 步第 7 条降级；`WENDAO_API_KEY` 用于第 1 步的机场粗筛与骨架摸底、以及第 3 步的执飞校验，可选，缺了按各步的降级路径继续。
 
 ### 第 1 步：目的地、候选机场与地面接驳
 
 1. 问清三件事：**雪场全名**、**出发城市**、**有没有机场偏好**。
 2. 列出雪场周边的候选机场（一般 2–4 个）。判断依据是驾车用时与航线覆盖，不是单纯距离：第二近的机场常有更多班次和更低票价，值得一并比较。
-3. **候选机场 ≥ 2 个时先预查**，用同一日期把车程和票价对齐：
-
-   ```bash
-   node scripts/airport_scan.js --resort "<雪场名称>" [--resort-city <城市>] \
-     --from "<出发城市>" --date YYYY-MM-DD \
-     --candidates "<机场1>|<城市1>;<机场2>|<城市2>" \
-     --type direct --repeat 1 [--out scan.json]
-   ```
+3. **候选机场 ≥ 2 个时先粗筛**，用携程问道问一轮，把「有没有航班、班次量级、最早落地」摆出来。提示词用 `references/wendao-prompts.md` 的**提示词 1**，按该文件的调用方式直接 POST，不封 CLI。
 
    - 样本日取出行窗口内的第一个候选日期；窗口很长时取中间一个平日。
-   - 预查只看直飞、`--repeat 1`，控制配额；正式检索阶段再放开。
-   - 输出每个机场的 `toResortMinutes`、最低票价、进场时刻、班次，按票价升序排。
+   - **只取三件事**：有没有航班、大致几班、最早一班几点落地（决定当天能不能进场）。票价只当量级参考。
+   - 问道按日配额、比飞常准宽松，粗筛可以反复问。**精确票价一律留到第 3 步**用飞常准，别在这一步烧积分。
+   - 没有 `WENDAO_API_KEY` 时跳过粗筛，直接把候选机场列给用户，请他选。
 
-4. **把对比表交给用户选**，用 AskUserQuestion 让他决定主选机场，以及是否把其他机场的航班一并纳入比较。选择权在用户，不要替他挑。
-
-   ```
-   header: 到达机场
-   question: 雪场周边有这几个机场，样本日 <日期> 的对比如下（车程已含预留）：
-             <机场A>  车程 XhXX  最低 ¥<P>  进场 <HH:MM>  <N> 班
-             <机场B>  车程 YhYY  最低 ¥<Q>  进场 <HH:MM>  <M> 班
-             选哪个作为主选？
-   options:
-     - <机场A>（车程短）
-     - <机场B>（票价低）
-     - 两个都纳入，让方案自己比
-   ```
-
-5. 选定后若需单独复核车程（或只有一个机场），查一次：
+4. **逐个算车程**（入围的 2–3 个机场各查一次，高德额度大不用省；只有一个机场时查一次即可）：
 
    ```bash
    node scripts/amap_route.js --from "<机场名称>" --to "<雪场名称>" --from-city <城市>
    ```
 
    脚本输出 `toResortMinutes` = 驾车用时 + 预留，预留算子为 **+20% 且至少 +15 分钟**，用 `--buffer-pct` / `--buffer-min` 调整。冬季山路、夜间、雪天场景把比例取到 30% 以上。
+
+5. **把对比表交给用户选**，用 AskUserQuestion 让他决定主选机场，以及是否把其他机场的航班一并纳入比较。选择权在用户，不要替他挑。
+
+   ```
+   header: 到达机场
+   question: 雪场周边有这几个机场，样本日 <日期> 的情况如下（车程已含预留）：
+             <机场A>  车程 XhXX  进场 <HH:MM>  约 <N> 班  价位 <区间>
+             <机场B>  车程 YhYY  进场 <HH:MM>  约 <M> 班  价位 <区间>
+             选哪个作为主选？
+   options:
+     - <机场A>（车程短）
+     - <机场B>（航班多/票价低）
+     - 两个都纳入，让方案自己比
+   ```
+
+   班次量与价位写「约」「区间」，因为这一步的航班数据来自问道，只作量级判断；车程是精确值。
+
 6. 把「驾车 X 分钟 + 预留 Y 分钟 = Z 分钟」明确写进给用户的确认卡，Z 直接决定能滑多久。
 7. 用户没有高德 key 时，把候选机场列给用户，请他给每个机场的单程车程分钟数，加预留后把增量告知用户。
 8. 查证雪场营业时间：日场起止、有无夜场及其起止、**哪几天不开放夜场**。来源取官方公示，查不到则问用户。
-9. **输出行程骨架并请用户确认**，格式见 `references/intake.md`。
+9. **先摸行程骨架**：用 `references/wendao-prompts.md` 的**提示词 2** 问一轮航班时段分布（早上/中午/下午/晚上各几班、最早起飞、最晚落地、有无红眼、哪天更贵或更少）。它的用途是定骨架方向——「周五有没有晚班」决定去程能不能请 0 天，「周日最晚几点落地」决定返程要不要占周一——不用于精确比价。
+10. **输出行程骨架并请用户确认**，格式见 `references/intake.md`。
 
 多机场方案在后续阶段的两条约束：`scenarios[].out` / `.ret` 里每条航班补 `airport` 三字码；`destAirport.toResortMinutes` 取各机场车程中最长的一段，并在报告里说明。
 
@@ -88,20 +86,43 @@ node scripts/doctor.js
 
 ### 第 3 步：检索航班
 
-对每个日期、每个方向各执行一次：
+按「请假档位」自动铺日期，一个往返一次调用：
 
 ```bash
 node scripts/flight_query.js \
-  --from "<出发城市>" --to "<到达城市>" --date YYYY-MM-DD --type both --out <出程|返程>-YYYY-MM-DD.json
+  --from <出发城市码> --to <到达城市码> \
+  --weekend YYYY-MM-DD --leave-days <0|0.5|1|2> \
+  --both --out <场景key>.json
 ```
 
-- `--type both` 同时取直飞与中转；默认 `--repeat 2` 执行两次查询并取并集，用于补齐班次。
-- `--repeat 1` 用于快速试探，定稿前用默认值再跑一次。
-- **用户选了多个机场时**，对每个到达机场各执行一次，把结果合并进同一个 `out` / `ret` 数组，并给每条补上 `airport` 三字码。
-- 输出为 JSON 数组，字段与 config 的航班对象一致，直接拼进 `scenarios[].out` / `.ret`。
-- 同一航班号在同一日期出现多条时以最低价为准。
-- 跨日航班由脚本自动填 `arrDate`，人工核对一遍首末条。
-- 需要人工检查解析结果时加 `--raw` 看原始返回。问道接口非公开文档化，返回格式随时可能调整；解析不出航班时按 `--raw` 的原文手工整理成 config 的航班数组。
+`--weekend` 传该周末任意一天，脚本自动归到周五，再按请假天数铺日期：
+
+| 请假 | 去程 | 返程 | 数据源 |
+|---|---|---|---|
+| 0 | 周五、周六 | 周日 | 3 |
+| 0.5 | 周五、周六 | 周日、周一 | 4 |
+| 1 | 周四、周五、周六 | 周日、周一、周二 | 6 |
+| 2 | 周三…周六 | 周日…周三 | 8 |
+
+- **积分按唯一「出发→到达」城市对计费，与日期数无关。** 一个往返周末固定 2 分，铺几天都一样。
+- **优先用城市码**：`BJS` 覆盖首都 + 大兴，`SHA` 覆盖浦东 + 虹桥，一次查询拿全，省掉逐个机场预查。跨城市的多机场（如长春 CGQ 与沈阳 SHE）才需要分开查。
+- `--chunk 3`（默认）控制每次调用的数据源数。返回 `truncated: true` 说明有数据被静默截断，调小 `--chunk` 或 `--per-transfer` 重跑。
+- `--per-transfer 15`（默认）控制每个日期保留的中转条数；直飞与经停全留。
+- 输出 `{ out, ret }`，字段与 config 的航班对象一致：`price` 是票面价，`tax` 是实际机建 + 燃油，`arrDate`、`seg`、`tag` 都已填好，直接拼进 `scenarios[].out` / `.ret`。
+- 同一航班号同日多条以最低价为准（脚本已去重）。
+- 加 `--raw` 可看本次调用的积分消耗、行数与截断情况。
+
+**查询结果自动缓存**（`<技能根>/.cache/`，也可用 `SKI_CACHE_DIR` 指定）。查询很贵，重跑不该再花一次钱：
+
+- 缓存键是 `(工具, 参数)` 的哈希，参数里含完整 SQL —— 同样的命令重跑必然命中，改了日期或航线就是新键。
+- **存的是原始返回，不是解析后的对象**，所以解析逻辑以后改了，老缓存照样能重新解析。
+- 新鲜期默认 6 小时（`--cache-ttl <分钟>` 可调）。超过新鲜期、上次被截断、上次就是失败记录 —— 这三种情况在正常模式下都重查，不拿残数据糊弄。
+- **查询失败时自动回退到该键上的旧缓存**，输出里标 `fallback`。网络断了、key 过期了，活照样能干完。
+- `--refresh` 强制重查并覆盖；`--no-cache` 完全不读不写。
+- `meta.dataAt` 是这批数据真正的获取时间（有缓存命中时会早于「现在」）。**写报告 `sourceNote` 要用它**，不要写当前时间。
+- 维护：`node scripts/cache.js list`（看有什么、多旧）、`prune`（清过期）、`clear`（清空）、`show <key>`（看某次的原始返回）。
+
+**可选：执飞交叉校验。** 最终只差 1–2 个候选时，用 `references/wendao-prompts.md` 的**提示词 3** 问一次「这天执飞吗」。这是问道唯一比飞常准更值得信的场景（实测与飞常准库存一致），但它给的航班号偶发出错，所以只用来确认**已知航班号**，不要拿它发现新航班。两者冲突时以飞常准为准，并在回复里说明。
 
 ### 第 4 步：生成报告
 
@@ -122,17 +143,20 @@ node scripts/flight_query.js \
 
 - 在场窗口与逐日重叠算法（日场满计、夜场按权重折算）
 - 请假天数的三段式判定（上班 / 半天分界 / 下班三个时刻，取值由用户给定）
-- 税费按航段计收、红眼航班不计住宿、雪场晚数的推导
+- 税费优先取航班自带的实际机建 + 燃油（`tax` 字段），缺失时才按每航段默认值估算；红眼航班不计住宿、雪场晚数的推导
 - 成本边界与敏感度检查方法
 
 ## API Key 配置
 
-两个 key 都只从环境变量读取，变量名固定。
+key 都从环境变量读取（飞常准允许回退读 `~/.workbuddy-ai/mcp.json`），变量名固定。
 
 | 变量 | 服务 | 用途 | 申请地址 |
 |---|---|---|---|
-| `WENDAO_API_KEY` | 携程问道 | 航班号、时刻、票价 | https://www.ctrip.com/wendao/openclaw |
+| `VARIFLIGHT_MCP_KEY` | 飞常准 MCP | 航班、时刻、含税票价、余票（主数据源，必需） | https://cmcp.variflight.com/ |
 | `AMAP_API_KEY` | 高德开放平台 | 地理编码 + 驾车路径规划 | https://console.amap.com/dev/key/app |
+| `WENDAO_API_KEY` | 携程问道 | 机场粗筛、骨架摸底、执飞校验（可选，按日配额，不封 CLI） | https://www.ctrip.com/wendao/openclaw |
+
+飞常准 MCP 每月 100 积分，按唯一「出发→到达」城市对计费；`initialize` / `tools/list` 不扣分。积分用尽时换 Key，或先用 `--raw` 确认消耗。
 
 ### 缺 key 时怎么引导
 
@@ -157,22 +181,30 @@ node scripts/flight_query.js \
 用内联方式只传给本次进程，key 不落盘：
 
 ```bash
-WENDAO_API_KEY="用户给的 token" node scripts/flight_query.js --from "<出发>" --to "<到达>" --date YYYY-MM-DD
+VARIFLIGHT_MCP_KEY="用户给的 key" node scripts/flight_query.js --from "<出发>" --to "<到达>" --date YYYY-MM-DD
+```
+
+问道没有 CLI，临时 token 直接塞进 curl：
+
+```bash
+WENDAO_API_KEY="用户给的 token" curl -sS -X POST 'https://externalcallback.ctrip.com/skills/api/crew/skillhub/searchInfo' \
+  -H 'Content-Type: application/json' \
+  -d "{\"inputs\":{\"token\":\"$WENDAO_API_KEY\",\"query\":\"<提示词>\"}}"
 ```
 
 Windows 上已配置的用户级变量在当前会话取不到时，先取一次再执行：
 
 ```powershell
-$env:WENDAO_API_KEY = [Environment]::GetEnvironmentVariable('WENDAO_API_KEY','User')
+$env:VARIFLIGHT_MCP_KEY = [Environment]::GetEnvironmentVariable('VARIFLIGHT_MCP_KEY','User')
 ```
 
 ### 规则
 
-- 变量名完全一致：`AMAP_API_KEY` 与 `WENDAO_API_KEY`。
+- 变量名完全一致：`VARIFLIGHT_MCP_KEY`、`AMAP_API_KEY`、`WENDAO_API_KEY`。
 - 高德 key 必须是**「Web 服务」**类型，并在控制台开通「地理编码」与「驾车路径规划」两项服务。
 - key 只从环境变量读取：不写入 `config.json`，不写进 shell 脚本或任何仓库文件，不作为命令行参数传递，回复中不回显完整内容。
 - 设置完成后先跑一次真实查询确认通，再进入批量检索。
-- 缺 `WENDAO_API_KEY` 时航班无法检索，配置完成后再进入第 3 步。
+- 缺 `VARIFLIGHT_MCP_KEY` 时航班无法检索，配置完成后再进入第 3 步。
 - 缺 `AMAP_API_KEY` 且用户不提供时，问「单程车程大概多少分钟」，加预留后继续，并在报告头部注明车程为估算值。
 
 ## 运行环境
@@ -180,20 +212,23 @@ $env:WENDAO_API_KEY = [Environment]::GetEnvironmentVariable('WENDAO_API_KEY','Us
 | 依赖 | 说明 |
 |---|---|
 | Node.js ≥ 18 | 脚本使用内置 `fetch`，无 npm 依赖 |
-| 网络 | `restapi.amap.com`、`externalcallback.ctrip.com` 可达 |
+| 网络 | `c-gw.variflight.com`、`restapi.amap.com`、`externalcallback.ctrip.com` 可达 |
 
 ## 文件说明
 
 | 路径 | 用途 |
 |---|---|
 | `scripts/planner.js` | 测算引擎 + HTML 生成。纯参数驱动，无内置地点/日期，缺参即报错 |
-| `scripts/flight_query.js` | 航班检索（携程问道接口），输出可直接写入 config 的航班数组 |
+| `scripts/flight_query.js` | 航班检索（飞常准 MCP），按请假档位铺日期，输出可直接写入 config 的 `{ out, ret }` |
+| `scripts/variflight.js` | 飞常准 MCP 客户端：JSON-RPC/SSE 解析、SQL 构造、日期窗口、结果映射、缓存读写 |
+| `scripts/cache.js` | 查询结果缓存：按 (工具, 参数) 哈希落盘原始返回，带新鲜期、失败回退、过期清理；也可单独 `node scripts/cache.js list` 维护 |
 | `scripts/amap_route.js` | 高德驾车用时查询，输出含预留的 `toResortMinutes` |
-| `scripts/airport_scan.js` | 多机场预查：同一天的票价 + 车程横向对比，供用户选机场 |
-| `scripts/wendao.js` | 航班检索与解析实现，被上面两个检索脚本共用 |
+| `scripts/airport_scan.js` | 可选：多机场精确预查（同日票价 + 车程横向对比）。会消耗飞常准积分，主流程用问道粗筛代替，仅在用户要求精确预查时使用 |
+| `scripts/wendao.js` | 携程问道的请求与解析实现，供需要编程调用的场景使用。主流程不经过它，粗筛直接按 `references/wendao-prompts.md` 发原始请求 |
 | `scripts/amap.js` | 地理编码与驾车路径规划实现，被上面两个路线脚本共用 |
 | `scripts/keys.js` | 凭据登记表与缺 key 引导文案，所有脚本共用 |
 | `scripts/doctor.js` | 凭据状态检查；`--probe` 发真实请求验证 |
+| `references/wendao-prompts.md` | 携程问道的自然语言提示词库：机场粗筛、骨架摸底、执飞校验，含写法上的坑与字段可信度 |
 | `references/intake.md` | 问答脚本：该问什么、选项怎么给、骨架确认卡长什么样 |
 | `references/config-schema.md` | config.json 逐字段说明与可复制骨架 |
 | `references/algorithm.md` | 计算模型、边界条件、敏感度检查方法 |

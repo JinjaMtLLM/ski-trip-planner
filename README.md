@@ -12,16 +12,17 @@ No resort, airport, date or price is hard-coded. Every number comes from the use
 
 - Node.js ≥ 18 (uses built-in `fetch`, no npm dependencies)
 - Python 3.9+ — only for `tools/package.py`
-- Two API keys, read from environment variables only:
+- API keys, read from environment variables only:
 
 | Variable | Service | Used for | Get it at |
 |---|---|---|---|
-| `WENDAO_API_KEY` | Ctrip Wendao | flight numbers, times, fares | https://www.ctrip.com/wendao/openclaw |
+| `VARIFLIGHT_MCP_KEY` | Variflight MCP | flights, times, tax-inclusive fares, seats — **required** | https://cmcp.variflight.com/ |
 | `AMAP_API_KEY` | Amap (Gaode) | geocoding + driving route | https://console.amap.com/dev/key/app |
+| `WENDAO_API_KEY` | Ctrip Wendao | rough airport screening, trip-skeleton probing, operating-status check — optional | https://www.ctrip.com/wendao/openclaw |
 
-The Amap key must be a **Web Service** key with *Geocoding* and *Driving Direction* enabled. Keys are never written to disk, never passed as command-line arguments, and never echoed back in full.
+The Amap key must be a **Web Service** key with *Geocoding* and *Driving Direction* enabled. Keys are never written to disk, never passed as command-line arguments, and never echoed back in full. `VARIFLIGHT_MCP_KEY` falls back to `~/.workbuddy-ai/mcp.json` when the environment variable is unset.
 
-Check both at once:
+Check them all at once:
 
 ```bash
 node scripts/doctor.js          # are they set?
@@ -59,29 +60,46 @@ Either way the destination folder must be named `ski-trip-planner`, matching `SK
 Ask the agent for a ski trip. It runs four steps:
 
 0. **Credentials** — `doctor.js`, and help set up any missing key.
-1. **Destination and airport** — list the airports around the resort, pre-query them on one sample date with `airport_scan.js` (driving time plus cheapest fare), and let *you* pick. Then confirm the trip skeleton: resort opening hours, day/night sessions, night-session rest days.
+1. **Destination and airport** — list the airports around the resort, rough-screen them with a plain-language Ctrip Wendao prompt (flight counts, earliest landing, price ballpark), get exact drive times from Amap for the shortlist, and let *you* pick. Then probe the schedule shape and confirm the trip skeleton: resort opening hours, day/night sessions, night-session rest days.
 2. **Parameters** — date range, lodging budget (resort and layover city priced separately), leave buckets, tax per segment, and the three leave-day cut-off times (work start / noon split / work end, default `08:30` / `14:00` / `20:00`).
-3. **Flights** — `flight_query.js` per date and direction, direct and connecting.
+3. **Flights** — `flight_query.js`, one call per weekend and direction; it fans the dates out from the leave bucket, direct and connecting. Raw results are cached on disk, so re-running a failed step costs nothing.
 4. **Report** — `planner.js` produces the HTML.
 
 Scripts can also be run by hand:
 
 ```bash
-# compare candidate airports on one date: drive time + cheapest fare
-node scripts/airport_scan.js --resort "Some Resort" --from "City A" --date 2026-12-05 \
-  --candidates "Airport One|City One;Airport Two|City Two" --type direct --repeat 1
-
 # driving time for a single route, with buffer applied
 node scripts/amap_route.js --from "Some Airport" --to "Some Resort" --from-city "Some City"
 
+# flights for one weekend, both directions, dates fanned out by leave days
+node scripts/flight_query.js --from SZX --to CGQ --weekend 2026-12-11 --leave-days 1 --both --out weekend-1211.json
+
 # flights for one date, direct + connecting, written as a config-ready array
-node scripts/flight_query.js --from "City A" --to "City B" --date 2026-12-05 --type both --out out-2026-12-05.json
+node scripts/flight_query.js --from SZX --to CGQ --date 2026-12-05 --type both --out out-2026-12-05.json
 
 # compute and render
 node scripts/planner.js config.json --csv
 ```
 
+`--from` / `--to` take IATA codes. Prefer **city** codes (`BJS` = PEK + PKX, `SHA` = PVG + SHA) so one query covers every airport in a city; use airport codes only when the airports sit in different cities.
+
 `planner.js` exits with an error naming any missing config field. There are no silent defaults — that is deliberate.
+
+### Query cache
+
+Every flight query is expensive, so the **raw response** of each `tools/call` is written to `<skill>/.cache/` (override with `SKI_CACHE_DIR`). The cache key is a hash of the tool name plus its arguments — which include the full SQL — so the same command re-run hits the cache, while any change to dates, routes or `--per-transfer` produces a new key.
+
+- **Freshness** — 6 hours by default (`--cache-ttl <minutes>`). A stale entry, a truncated entry, or an entry that recorded a previous failure is *not* reused in normal mode; the query is re-run instead.
+- **Failure fallback** — if the live call throws (network down, key expired, tool error), the script falls back to whatever cache exists for that key and flags it as `fallback` in the metadata. You get an answer instead of a stack trace.
+- **Overrides** — `--refresh` re-queries and overwrites; `--no-cache` neither reads nor writes.
+- **Provenance** — `meta.dataAt` reports when the data was actually fetched. A cache hit makes that earlier than "now", so use it for the report footer rather than the current time.
+- **Maintenance** — `node scripts/cache.js list | prune | clear`, or `show <key>` to read back one raw response.
+
+```bash
+node scripts/cache.js list              # what's cached, how old, how many rows
+node scripts/cache.js prune --days 7    # drop entries older than a week
+node scripts/cache.js clear             # start over
+```
 
 ## Files
 
@@ -89,13 +107,16 @@ node scripts/planner.js config.json --csv
 |---|---|
 | `SKILL.md` | Skill definition and the four-step workflow |
 | `scripts/planner.js` | Enumeration engine + HTML report generator. Purely parameter-driven |
-| `scripts/airport_scan.js` | Multi-airport pre-query: drive time and cheapest fare on one date |
-| `scripts/flight_query.js` | Flight search via the Ctrip Wendao API; outputs config-shaped arrays |
+| `scripts/flight_query.js` | Flight search via the Variflight MCP; fans dates out from the leave bucket, outputs config-shaped `{ out, ret }` |
+| `scripts/variflight.js` | Variflight MCP client: JSON-RPC/SSE parsing, SQL builder, date windows, row mapping, cache plumbing |
+| `scripts/cache.js` | Query cache: raw responses on disk keyed by tool + arguments, with freshness window, failure fallback and pruning |
 | `scripts/amap_route.js` | Amap driving time, outputs `toResortMinutes` including the buffer |
-| `scripts/wendao.js` | Flight query and response parser, shared by the search scripts |
+| `scripts/airport_scan.js` | Optional: precise multi-airport pre-query (fare + drive time on one date). Costs Variflight credits — the main flow rough-screens with Wendao instead |
+| `scripts/wendao.js` | Ctrip Wendao request/parse implementation for programmatic use; not on the main path |
 | `scripts/amap.js` | Geocoding and driving route implementation, shared by the route scripts |
 | `scripts/keys.js` | Credential registry and the shared missing-key guide |
 | `scripts/doctor.js` | Credential status; `--probe` verifies against the live APIs |
+| `references/wendao-prompts.md` | Wendao prompt library: airport rough-screen, skeleton probe, operating-status check, plus the phrasing pitfalls and per-field reliability |
 | `references/intake.md` | What to ask, how to offer options, the confirmation card |
 | `references/config-schema.md` | Field-by-field `config.json` reference with a copyable skeleton |
 | `references/algorithm.md` | The model: windows, leave-day rules, cost boundaries, sensitivity checks |
@@ -105,7 +126,7 @@ node scripts/planner.js config.json --csv
 - **Skiable time** — the resort's opening hours are intersected with your actual presence, day by day. Day sessions count fully; night sessions are multiplied by a weight (0.5 by default). Nights when the resort does not open night skiing are skipped.
 - **Arrival / departure** — landing + transfer time to the resort; the reverse adds check-in and the drive back before departure.
 - **Leave days** — outbound judged by departure time, return judged by landing time (a late-evening flight or an early-morning arrival can cost zero leave); whole working days in between are counted.
-- **Cost** — base fare + tax per segment (a connection is two segments) + lodging. Late-night arrivals that land before a set hour are not charged a hotel night.
+- **Cost** — fare + tax. Tax is taken from the flight's own construction-fee-plus-fuel figures when the data source provides them; only when it does not does the skill fall back to the per-segment default (a connection is two segments). Plus lodging. Late-night arrivals that land before a set hour are not charged a hotel night.
 - **Multiple airports** — each flight may carry a three-letter airport code, shown next to the flight number; transfer time uses the longest drive among the chosen airports.
 
 ## Development
@@ -121,10 +142,13 @@ The bundler uses the git file list, so `.gitignore` is respected and `.git/` nev
 ## Before you rely on it
 
 - Fares and schedules come from third-party services as point-in-time snapshots. Prices move, connections get re-timed. Verify every itinerary on the booking page before paying.
-- The Wendao token is rate-limited — roughly 30 queries per token per day. Plan the query budget per date and direction.
+- Flight data comes from the **Variflight MCP** (`c-gw.variflight.com`), which is billed in credits: **100 credits per month**, charged **once per unique origin→destination city pair**, regardless of how many dates you search. `initialize` / `tools/list` are free. A single round-trip weekend therefore costs 2 credits no matter how many leave buckets you enumerate. If you run out, swap the key.
+- The MCP returns at most **200 rows per SQL query** and flags it as `truncated: true`. The query builder ranks rows per direction and per transfer count so one direction can never crowd out the other, but on very dense routes you may still need a smaller `--per-transfer` or `--chunk`.
+- Cached responses are point-in-time snapshots, exactly like live ones — a 6-hour-old cache is still a 6-hour-old price. Check `meta.dataAt` before quoting a fare, and prefer `--refresh` right before you book.
+- **Wendao is not a fare source.** It is used only for rough screening and for confirming that a given flight operates on a given day. Its transfer coverage is roughly 9%, it sometimes misreports flight numbers, it quotes bare fares without taxes, and it is not reproducible (the same prompt can answer differently twice). Nothing from Wendao is written into `config.json`.
+- The Wendao endpoint behind that skill (`externalcallback.ctrip.com/skills/api/crew/skillhub/searchInfo`) is **not publicly documented** and is not a supported public API — its response format can change, it can start demanding new credentials, or it can stop answering entirely. If that happens you lose only the rough-screening step; flight search still works.
 - Resort hours, lift tickets and lodging prices are inputs you supply; the skill does not verify them.
-- Flight data comes from the endpoint behind Ctrip's Wendao skill (`externalcallback.ctrip.com/skills/api/crew/skillhub/searchInfo`). That endpoint is **not publicly documented** and is not a supported public API — its response format can change, it can start demanding new credentials, or it can stop answering entirely, at any time and without notice. If that happens the flight-search step breaks and no other input can substitute for it; `planner.js` still runs on a `config.json` you assemble by hand.
-- This is an unofficial tool. It is not affiliated with Ctrip or Amap, and use of their services is governed by their own terms.
+- This is an unofficial tool. It is not affiliated with Variflight, Ctrip or Amap, and use of their services is governed by their own terms.
 
 ## License
 

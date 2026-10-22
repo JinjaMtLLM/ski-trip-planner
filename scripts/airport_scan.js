@@ -6,13 +6,17 @@
  * 用途：雪场附近常有多个机场可选（不同城市、不同车程、不同票价）。
  * 用同一天的票价和车程做一次对齐比较，把结果交给用户选，而不是替他选。
  *
+ * 注意：本脚本走飞常准，每个候选机场城市对消耗 1 积分。
+ * 主流程的机场粗筛改用携程问道（references/wendao-prompts.md 提示词 1）+ amap_route.js，
+ * 不烧积分；只有用户明确要「精确预查」时才用本脚本。
+ *
  * 用法：
  *   node airport_scan.js --resort "<雪场名称>" --from "<出发城市>" --date YYYY-MM-DD \
  *        --candidates "<机场1>|<城市1>;<机场2>|<城市2>" [--resort-city <城市>] \
  *        [--type direct|both] [--repeat 1] [--buffer-pct 20] [--buffer-min 15] \
- *        [--out <file>]
+ *        [--out <file>] [--no-cache | --refresh]
  *
- * key：AMAP_API_KEY 查车程（必需），WENDAO_API_KEY 查票价（缺失时只出车程）。
+ * key：AMAP_API_KEY 查车程（必需），VARIFLIGHT_MCP_KEY 查票价（缺失时只出车程）。
  *
  * 输出：JSON 数组，每个元素对应一个候选机场：
  *   { airport, city, distanceKm, driveMin, bufferPct, bufferMin, toResortMinutes,
@@ -21,9 +25,9 @@
  */
 
 const fs = require('fs');
-const { requireKey, status, textWidth, padEnd } = require('./keys');
+const { requireKey, textWidth, padEnd } = require('./keys');
 const { routeInfo } = require('./amap');
-const { queryFlights } = require('./wendao');
+const { queryFlights, token } = require('./variflight');
 
 function die(msg, hint) {
   console.error('\u2716 ' + msg + (hint ? '\n  ' + hint : ''));
@@ -64,14 +68,18 @@ const REPEAT = Math.max(1, Math.min(5, Number(getArg('repeat', 1)) || 1));
 const BUFFER_PCT = Number(getArg('buffer-pct', 20));
 const BUFFER_MIN = Number(getArg('buffer-min', 15));
 
+// 查询结果按 (SQL) 缓存，重跑同一组候选机场不再重复扣分
+const CACHE = {
+  mode: args.includes('--no-cache') ? 'off' : args.includes('--refresh') ? 'refresh' : 'auto',
+};
+
 requireKey('AMAP_API_KEY');
-const canQueryFares = status('WENDAO_API_KEY').set;
+const canQueryFares = Boolean(token());
 if (!canQueryFares) {
-  console.error('! 未设置 WENDAO_API_KEY，本次只输出车程，不含票价。');
+  console.error('! 未配置飞常准 MCP Key，本次只输出车程，不含票价。');
 } else {
-  const calls = CANDIDATES.length * (TYPE === 'both' ? 2 : 1) * REPEAT;
-  console.error('将发起 ' + calls + ' 次航班查询（' + CANDIDATES.length + ' 个机场 × '
-    + (TYPE === 'both' ? 2 : 1) + ' 类 × ' + REPEAT + ' 次）。');
+  const calls = CANDIDATES.length;
+  console.error('将发起最多 ' + calls + ' 次航班查询（每个候选机场一次；命中缓存的不扣积分）。');
 }
 
 const toMin = (hm) => {
@@ -120,13 +128,16 @@ const durText = (min) => (min >= 60 ? Math.floor(min / 60) + 'h' + String(min % 
 
     if (canQueryFares && FROM) {
       try {
-        const { flights } = await queryFlights({
-          from: FROM,
-          to: c.city || c.airport,
-          date: DATE,
-          type: TYPE,
-          repeat: REPEAT,
+        const { flights: all } = await queryFlights({
+          sources: [{ from: FROM, to: c.city || c.airport, date: DATE }],
+          perTransfer: TYPE === 'direct' ? 0 : 20,
+          chunk: 3,
+          cache: CACHE,
+          log: () => {},
         });
+        const flights = TYPE === 'direct' ? all.filter((f) => f.seg === 1)
+          : TYPE === 'transfer' ? all.filter((f) => f.seg > 1)
+            : all;
         row.flightCount = flights.length;
         if (flights.length) {
           const withArrival = flights.map((f) => ({
@@ -138,6 +149,8 @@ const durText = (min) => (min >= 60 ? Math.floor(min / 60) + 'h' + String(min % 
           const byPrice = [...withArrival].sort((a, b) => a.price - b.price)[0];
           row.cheapest = {
             price: byPrice.price,
+            tax: byPrice.tax,
+            total: byPrice.tax == null ? null : byPrice.price + byPrice.tax,
             no: byPrice.no,
             dep: byPrice.dep,
             arr: byPrice.arr,
@@ -194,7 +207,7 @@ const durText = (min) => (min >= 60 ? Math.floor(min / 60) + 'h' + String(min % 
     resort: RESORT,
     type: TYPE,
     repeat: REPEAT,
-    note: '票价为单日单程参考价，未含税费；请让用户基于车程与票价自行选择，不要代为决定。',
+    note: 'price 为民航票面价，tax 为机建+燃油，total 为两者之和；请让用户基于车程与票价自行选择，不要代为决定。',
     airports: rows,
   }, null, 1);
 

@@ -8,17 +8,18 @@
 
 ## 第零轮：凭据（静默检查，缺失才问）
 
-先跑 `node scripts/doctor.js`，两个 key 都在就不提这件事，直接进入第一轮。
+先跑 `node scripts/doctor.js`，三个 key 都在就不提这件事，直接进入第一轮。
 
 缺 key 时，把对应引导转给用户，一次只问一个：
 
 ```
 header: 航班数据
-question: 查航班需要一个携程问道的 token，在 https://www.ctrip.com/wendao/openclaw 按页面指引申请，
-          然后在终端执行 export WENDAO_API_KEY='你的 token'。设置好了告诉我，或者把 token 发我，我只用于本次查询。
+question: 查航班要一个飞常准 MCP 的 key，在 https://cmcp.variflight.com/ 申请，
+          然后在终端执行 export VARIFLIGHT_MCP_KEY='你的 key'。设置好了告诉我，
+          或者把 key 发我，我只用于本次查询。
 options:
   - 我去申请，稍后给你
-  - 我把 token 发你，这次直接用
+  - 我把 key 发你，这次直接用
   - 先跳过航班，只看车程和营业时间
 ```
 
@@ -32,6 +33,18 @@ options:
   - 我设置 AMAP_API_KEY
   - 直接告诉你分钟数（我来给）
   - 按你估算的先算，报告里标注为估算
+```
+
+问道的 key 是**可选**的，只在能拿到时问，不要为它卡住流程：
+
+```
+header: 粗筛（可选）
+question: 如果有一个携程问道的 token，我可以先粗筛几个候选机场的班次和时段，帮你定行程骨架，
+          它配额宽松、不占飞常准积分。在 https://www.ctrip.com/wendao/openclaw 申请，
+          按 export WENDAO_API_KEY='你的 token' 设置。没有也能继续，我直接把候选机场列给你选。
+options:
+  - 我设置 WENDAO_API_KEY
+  - 没有，直接列候选机场给我
 ```
 
 要点：
@@ -54,21 +67,26 @@ options:
 
 拿到雪场名称后自己去查（不要问用户）：
 
-- 雪场周边有哪些可用机场，各自的驾车用时 → `scripts/airport_scan.js`
-- 这些机场在同一天的最低票价与进场时刻 → 同上（多机场时）
-- 日场 / 夜场营业时间、夜场休息日 → 官方公示
+| 要拿到 | 怎么拿 |
+|---|---|
+| 雪场周边有哪些可用机场 | 自行判断，结合航线覆盖而非单纯距离 |
+| 各机场的班次量级、最早落地、时段分布 | 携程问道，`references/wendao-prompts.md` 提示词 1 |
+| 各机场的驾车用时（含预留） | `node scripts/amap_route.js` 逐个查 |
+| 日场 / 夜场营业时间、夜场休息日 | 官方公示 |
+
+问道给的是量级，不要写成精确数字；车程是精确值，可以写死。
 
 **候选机场 ≥ 2 个时，先把预查结果摆出来让用户选**，用 AskUserQuestion：
 
 ```
 header: 到达机场
-question: <雪场> 周边有这几个机场，样本日 <日期> 的对比（车程已含预留）：
-          <机场A>　车程 XhXX　最低 ¥<P>　进场 <HH:MM>　<N> 班
-          <机场B>　车程 YhYY　最低 ¥<Q>　进场 <HH:MM>　<M> 班
+question: <雪场> 周边有这几个机场，样本日 <日期> 的情况（车程已含预留）：
+          <机场A>　车程 XhXX　进场 <HH:MM>　约 <N> 班　价位 <区间>
+          <机场B>　车程 YhYY　进场 <HH:MM>　约 <M> 班　价位 <区间>
           选哪个作主选？
 options:
   - <机场A>（车程短）
-  - <机场B>（票价低）
+  - <机场B>（航班多/票价低）
   - 两个都纳入，让方案自己比
 ```
 

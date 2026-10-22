@@ -121,6 +121,12 @@ function segsOf(f) {
   return f.tag === '直飞' || !f.tag ? 1 : 2;
 }
 
+// 税费：优先用航班自带的实际机建 + 燃油（flight_query.js 会写 tax），否则按每航段默认值估
+function taxOf(f) {
+  if (typeof f.tax === 'number' && f.tax >= 0) return f.tax;
+  return TAX_SEG * segsOf(f);
+}
+
 // 请假：出发端看起飞，返程端看落地；途中工作日整天计入
 function outLeave(f) {
   if (isWeekend(f.date)) return 0;
@@ -191,7 +197,7 @@ function compute(sc) {
       const h = computeTrip(o, r);
       if (h.hEff <= 0.05) continue;
       const days = h.hEff / SESSION_H;
-      const tax = TAX_SEG * (segsOf(o) + segsOf(r));
+      const tax = taxOf(o) + taxOf(r);
       const fare = o.price + r.price + tax;
       const n = nightsOf(o, r);
       const lodge = n.resort * LODGE_RESORT + n.trans * LODGE_TRANS;

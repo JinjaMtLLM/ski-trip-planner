@@ -8,14 +8,23 @@
  */
 
 const SPECS = {
+  VARIFLIGHT_MCP_KEY: {
+    service: '飞常准 MCP',
+    usage: '航班号 / 时刻 / 含税票价 / 余票（主数据源）',
+    applyUrl: 'https://cmcp.variflight.com/',
+    applyNote: '微信扫码或手机号登录，在控制台生成 MCP Key；每月 100 积分，按唯一「出发→到达」城市对计费',
+    example: 'node scripts/flight_query.js --from SZX --to CGQ --weekend 2026-12-11 --leave-days 1 --both --out w1.json',
+    required: true,
+    fallback: '也可以把 Key 写进 ~/.workbuddy-ai/mcp.json 的 variflight-mcp.headers.Authorization（Bearer <Key>），脚本会自动读取。',
+  },
   WENDAO_API_KEY: {
     service: '携程问道',
-    usage: '航班号 / 时刻 / 票价',
+    usage: '机场粗筛 / 骨架摸底 / 执飞校验（可选，不封 CLI）',
     applyUrl: 'https://www.ctrip.com/wendao/openclaw',
-    applyNote: '按页面指引申请并复制 API token；单个 token 有每日调用配额',
-    example: 'node scripts/flight_query.js --from "<出发城市>" --to "<到达城市>" --date YYYY-MM-DD',
-    required: true,
-    fallback: '',
+    applyNote: '按页面指引申请并复制 API token；按日配额，比飞常准宽松，适合反复粗筛',
+    example: "curl -sS -X POST 'https://externalcallback.ctrip.com/skills/api/crew/skillhub/searchInfo' -H 'Content-Type: application/json' -d \"{\\\"inputs\\\":{\\\"token\\\":\\\"$WENDAO_API_KEY\\\",\\\"query\\\":\\\"<提示词>\\\"}}\"",
+    required: false,
+    fallback: '不配置也能跑完整流程：跳过机场粗筛，直接把候选机场列给用户选；也失去执飞状态的交叉校验。提示词见 references/wendao-prompts.md。',
   },
   AMAP_API_KEY: {
     service: '高德开放平台',
@@ -44,7 +53,7 @@ function status(envName) {
 
 function statusLine(st) {
   const state = st.set ? `已设置（${st.length} 位）` : '未设置';
-  return padEnd(st.env, 17) + padEnd(state, 16) + st.spec.service + ' · ' + st.spec.usage;
+  return padEnd(st.env, 20) + padEnd(state, 16) + st.spec.service + ' · ' + st.spec.usage;
 }
 
 /**

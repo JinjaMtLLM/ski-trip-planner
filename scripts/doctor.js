@@ -1,18 +1,27 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * doctor.js — 检查两个外部服务的凭据状态
+ * doctor.js — 检查三个外部服务的凭据状态
  *
  * 用法：
  *   node scripts/doctor.js            只检查环境变量是否设置
  *   node scripts/doctor.js --probe    各发一次真实请求，验证可用性
  *   node scripts/doctor.js --json     输出机器可读结果
  *
- * 退出码：必需凭据（WENDAO_API_KEY）可用为 0，否则为 1。
- * 高德凭据缺失或不可用不改变退出码，按「向用户询问单程车程」降级。
+ * 退出码：必需凭据（VARIFLIGHT_MCP_KEY）可用为 0，否则为 1。
+ * 高德与问道凭据缺失或不可用不改变退出码，按各自的降级路径继续。
  */
 
-const { SPECS, status, statusLine, guide, detectWendaoError } = require('./keys');
+const { SPECS, status, statusLine, guide, detectWendaoError, padEnd } = require('./keys');
+const { rpc, openSession, token, VariflightError } = require('./variflight');
+const cache = require('./cache');
+
+/** 缓存目录与条目数：让用户知道「为什么这次没扣分」或「旧数据存在哪」 */
+function cacheStatus() {
+  const dir = cache.cacheDir();
+  if (!dir) return { dir: '', entries: 0 };
+  return { dir, entries: cache.list().length };
+}
 
 const args = process.argv.slice(2);
 const has = (f) => args.includes('--' + f);
@@ -70,16 +79,38 @@ async function probeWendao(token) {
   }
 }
 
-const PROBES = { AMAP_API_KEY: probeAmap, WENDAO_API_KEY: probeWendao };
+/** 飞常准 MCP：initialize + tools/list，两者都不扣积分 */
+async function probeVariflight() {
+  try {
+    const { info } = await openSession();
+    const { json } = await rpc({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+    const n = ((json.result && json.result.tools) || []).length;
+    if (!n) return { ok: false, detail: '握手成功但没返回工具列表' };
+    return { ok: true, detail: `MCP 可用（${(info && info.name) || 'unknown'}，${n} 个工具）` };
+  } catch (e) {
+    if (e instanceof VariflightError) {
+      return { ok: false, detail: e.message, kind: e.kind };
+    }
+    return { ok: false, detail: '网络请求失败：' + e.message };
+  }
+}
+
+const PROBES = { AMAP_API_KEY: probeAmap, WENDAO_API_KEY: probeWendao, VARIFLIGHT_MCP_KEY: probeVariflight };
 
 async function main() {
-  const names = ['WENDAO_API_KEY', 'AMAP_API_KEY'];
+  const names = ['VARIFLIGHT_MCP_KEY', 'AMAP_API_KEY', 'WENDAO_API_KEY'];
   const rows = [];
   for (const name of names) {
     const st = status(name);
+    // 飞常准 key 允许来自 ~/.workbuddy-ai/mcp.json，status() 只看环境变量，这里补上
+    if (name === 'VARIFLIGHT_MCP_KEY') {
+      const k = token();
+      st.set = Boolean(k);
+      st.length = k.length;
+    }
     const row = { env: name, set: st.set, length: st.length, required: st.spec.required, service: st.spec.service, usage: st.spec.usage };
     if (st.set && has('probe')) {
-      const r = await PROBES[name](process.env[name].trim());
+      const r = await PROBES[name](process.env[name] ? process.env[name].trim() : '');
       row.probe = r;
     }
     rows.push(row);
@@ -90,7 +121,7 @@ async function main() {
   const amapOk = amapRow.set && (!amapRow.probe || amapRow.probe.ok);
 
   if (has('json')) {
-    console.log(JSON.stringify({ ok: requiredOk, keys: rows }, null, 2));
+    console.log(JSON.stringify({ ok: requiredOk, keys: rows, cache: cacheStatus() }, null, 2));
     process.exit(requiredOk ? 0 : 1);
   }
 
@@ -99,9 +130,11 @@ async function main() {
   for (const r of rows) {
     console.log(statusLine({ env: r.env, spec: SPECS[r.env], set: r.set, length: r.length }));
     if (r.probe) {
-      console.log(' '.repeat(17) + (r.probe.ok ? '✔ ' : '✖ ') + r.probe.detail);
+      console.log(' '.repeat(20) + (r.probe.ok ? '✔ ' : '✖ ') + r.probe.detail);
     }
   }
+  const cs = cacheStatus();
+  console.log(padEnd('缓存', 20) + (cs.dir ? cs.entries + ' 条 · ' + cs.dir : '不可写，已关闭'));
   console.log('');
 
   if (!requiredOk) {
@@ -133,7 +166,7 @@ async function main() {
     process.exit(0);
   }
 
-  console.log('→ 两个凭据均可用，进入流程。');
+  console.log('→ 主凭据（飞常准 MCP）与高德均可用，进入流程。');
   process.exit(0);
 }
 
