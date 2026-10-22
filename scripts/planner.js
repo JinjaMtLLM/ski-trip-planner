@@ -193,8 +193,8 @@ function compute(sc) {
       const lodge = n.resort * LODGE_RESORT + n.trans * LODGE_TRANS;
       rows.push({
         leave,
-        outDate: o.date, outAd: o.arrDate || o.date, outNo: o.no || '—', outTag: o.tag || '直飞', outDep: o.dep, outArr: o.arr,
-        retDate: r.date, retAd: r.arrDate || r.date, retNo: r.no || '—', retTag: r.tag || '直飞', retDep: r.dep, retArr: r.arr,
+        outDate: o.date, outAd: o.arrDate || o.date, outNo: o.no || '—', outAir: o.airport || '', outTag: o.tag || '直飞', outDep: o.dep, outArr: o.arr,
+        retDate: r.date, retAd: r.arrDate || r.date, retNo: r.no || '—', retAir: r.airport || '', retTag: r.tag || '直飞', retDep: r.dep, retArr: r.arr,
         fare, tax, lodge, cost: fare + lodge,
         nResort: n.resort, nTrans: n.trans, nights: n.total,
         hDay: h.hDay, hNight: h.hNight, totalH: h.hEff, days: +days.toFixed(2),
@@ -221,6 +221,7 @@ const SC = SCENARIOS.map((s, i) => ({
 // ---------------------------------------------------------------- 渲染工具
 const badge = (L) => '<span class="badge b' + String(L).replace('.', 'h') + '">' + L + ' 天</span>';
 const tagSpan = (t) => (t === '直飞' ? '<span class="t-d">直飞</span>' : '<span class="t-t">' + t + '</span>');
+const airSpan = (c) => (c ? '<span class="air">' + c + '</span>' : '');
 const plus = (d, ad) => { const n = dayNum(ad) - dayNum(d); return n > 0 ? '<sup class="p1">+' + n + '</sup>' : ''; };
 const fmtHm = (mins) => { const t = ((mins % 1440) + 1440) % 1440; return pad2(Math.floor(t / 60)) + ':' + pad2(t % 60); };
 const resortIn = (arr) => fmtHm(hhmm(arr, 'arr') + TO_RESORT);
@@ -242,8 +243,8 @@ function cards(rows) {
     return '<div class="card">'
       + '<div class="card-top">' + badge(L) + '<span class="card-rank">最优</span></div>'
       + '<div class="card-price">¥' + b.perDay + '<span class="unit">/日 机+宿</span></div>'
-      + '<div class="card-line">去 ' + dn(b.outDate) + ' ' + b.outNo + ' ' + b.outDep + ' ' + tagSpan(b.outTag) + '</div>'
-      + '<div class="card-line">回 ' + dn(b.retDate) + ' ' + b.retNo + ' ' + b.retDep + ' ' + tagSpan(b.retTag) + '</div>'
+      + '<div class="card-line">去 ' + dn(b.outDate) + ' ' + b.outNo + airSpan(b.outAir) + ' ' + b.outDep + ' ' + tagSpan(b.outTag) + '</div>'
+      + '<div class="card-line">回 ' + dn(b.retDate) + ' ' + b.retNo + airSpan(b.retAir) + ' ' + b.retDep + ' ' + tagSpan(b.retTag) + '</div>'
       + '<div class="card-meta">' + nightLine + ' · 雪场 ' + b.nResort + ' 晚<br>机票 ¥' + b.fare + ' + 住宿 ¥' + b.lodge + '</div>'
       + '</div>';
   }).join('');
@@ -254,10 +255,10 @@ function table(rows) {
     + '<td class="num">' + (i + 1) + '</td>'
     + '<td>' + badge(r.leave) + '</td>'
     + '<td class="mono">' + dn(r.outDate) + ' <span class="dim">' + WD_CN[wd(r.outDate)] + '</span></td>'
-    + '<td class="mono">' + r.outNo + ' ' + r.outDep + '→' + r.outArr + plus(r.outDate, r.outAd) + ' ' + tagSpan(r.outTag) + '</td>'
+    + '<td class="mono">' + r.outNo + airSpan(r.outAir) + ' ' + r.outDep + '→' + r.outArr + plus(r.outDate, r.outAd) + ' ' + tagSpan(r.outTag) + '</td>'
     + '<td class="mono dim">' + resortIn(r.outArr) + '</td>'
     + '<td class="mono">' + dn(r.retDate) + ' <span class="dim">' + WD_CN[wd(r.retDate)] + '</span></td>'
-    + '<td class="mono">' + r.retNo + ' ' + r.retDep + '→' + r.retArr + plus(r.retDate, r.retAd) + ' ' + tagSpan(r.retTag) + '</td>'
+    + '<td class="mono">' + r.retNo + airSpan(r.retAir) + ' ' + r.retDep + '→' + r.retArr + plus(r.retDate, r.retAd) + ' ' + tagSpan(r.retTag) + '</td>'
     + '<td class="mono dim">' + resortOut(r.retDep) + '</td>'
     + '<td class="num">' + r.nResort + '</td>'
     + '<td class="num">' + r.hDay + '</td>'
@@ -380,6 +381,7 @@ const html = '<!DOCTYPE html>\n<html lang="zh-CN"><head><meta charset="utf-8">'
   + '.cnt{margin-left:auto;font-size:11.5px;color:#9ca3af;font-variant-numeric:tabular-nums}'
   + '.t-d{font-size:10px;color:#9ca3af;border:1px solid #e5e7eb;border-radius:4px;padding:0 4px;margin-left:4px}'
   + '.t-t{font-size:10px;color:#b45309;background:#fdf0e3;border-radius:4px;padding:1px 5px;margin-left:4px}'
+  + '.air{font-size:9.5px;color:#1d4ed8;background:#e8effd;border-radius:3px;padding:0 3px;margin-left:3px;font-weight:600;letter-spacing:.2px}'
   + '.p1{color:#c2410c;font-size:9px;font-weight:700;margin-left:1px}'
   + '.cmp{width:100%}.cmp td{padding:10px 12px}'
   + '.notes{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:16px 20px;font-size:13px;line-height:1.85;color:#374151}'
@@ -415,6 +417,9 @@ const html = '<!DOCTYPE html>\n<html lang="zh-CN"><head><meta charset="utf-8">'
   + '<li><b>住宿</b> = 雪场晚 × ¥' + LODGE_RESORT + ' + 转机晚 × ¥' + LODGE_TRANS + '。<b>雪场晚</b> = 总晚数 − 转机晚数。</li>'
   + '<li><b>元/日</b> = （机票含税 + 住宿）÷ 等效雪日。不含雪票、装备租赁、餐饮、地面交通。</li>'
   + '<li>相同「请假档 + 总雪时 + 总成本」的组合已合并，保留出发更晚（更省睡眠）的一条。</li>'
+  + (SC.some((s) => s.rows.some((r) => r.outAir || r.retAir))
+    ? '<li><b>多机场</b>：航班号后的蓝色三字码标出该段实际使用的机场；车程按 <b>' + TO_RESORT + ' 分钟</b> 统一计算，若各机场车程不同，请分开出报告或取最长的一段。</li>'
+    : '')
   + '</ul></div>'
   + '<div class="rule"></div>'
   + '<div class="sub">' + (SOURCE_NOTE ? SOURCE_NOTE + ' · ' : '') + '雪场营业时间以官方公示为准。价格实时浮动，下单前请复核。</div>'

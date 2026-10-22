@@ -120,4 +120,4 @@ function detectWendaoError(text) {
   return null;
 }
 
-module.exports = { SPECS, status, statusLine, guide, requireKey, detectWendaoError };
+module.exports = { SPECS, status, statusLine, guide, requireKey, detectWendaoError, textWidth, padEnd };

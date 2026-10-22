@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """把 skill 打包成可分发的 zip。
 
-与 WorkBuddy 自带的 package_skill.py 的区别：那个用 rglob('*') 全量收集，
-没有排除规则，会把 .git/ 一起打进去。本脚本改用 git 的文件清单，
-因此天然遵守 .gitignore，只在仓库里时才可用。
+用 git 的文件清单收集内容，因此天然遵守 .gitignore，开发目录里的 .git/、
+测试产物、分发包自身都不会被打进去。
 
 用法:
     python tools/package.py                 # 输出到 ./dist/ski-trip-planner.zip
     python tools/package.py -o /tmp/dist    # 指定输出目录
 
 原则：只打包「被 git 跟踪的文件 + 未被忽略的新文件」，
-并以 <仓库目录名>/ 作为 zip 内的顶层目录（与官方打包器保持一致）。
+并以 skill 名（取自 SKILL.md frontmatter）作为 zip 内的顶层目录。
 """
 
 from __future__ import annotations

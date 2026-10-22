@@ -31,20 +31,50 @@ node scripts/doctor.js
 
 输出两个 key 的状态。缺 `WENDAO_API_KEY` 时先按「API Key 配置」引导用户完成设置，再进入第 3 步；缺 `AMAP_API_KEY` 时按「API Key 配置」引导，用户不提供则走第 1 步第 4 条降级。
 
-### 第 1 步：目的地与地面接驳
+### 第 1 步：目的地、候选机场与地面接驳
 
-1. 问清三件事：**雪场全名**、**出发城市**、**可接受的备选机场**。
-2. 确定离雪场最近的到达机场，查驾车用时：
+1. 问清三件事：**雪场全名**、**出发城市**、**有没有机场偏好**。
+2. 列出雪场周边的候选机场（一般 2–4 个）。判断依据是驾车用时与航线覆盖，不是单纯距离：第二近的机场常有更多班次和更低票价，值得一并比较。
+3. **候选机场 ≥ 2 个时先预查**，用同一日期把车程和票价对齐：
+
+   ```bash
+   node scripts/airport_scan.js --resort "<雪场名称>" [--resort-city <城市>] \
+     --from "<出发城市>" --date YYYY-MM-DD \
+     --candidates "<机场1>|<城市1>;<机场2>|<城市2>" \
+     --type direct --repeat 1 [--out scan.json]
+   ```
+
+   - 样本日取出行窗口内的第一个候选日期；窗口很长时取中间一个平日。
+   - 预查只看直飞、`--repeat 1`，控制配额；正式检索阶段再放开。
+   - 输出每个机场的 `toResortMinutes`、最低票价、进场时刻、班次，按票价升序排。
+
+4. **把对比表交给用户选**，用 AskUserQuestion 让他决定主选机场，以及是否把其他机场的航班一并纳入比较。选择权在用户，不要替他挑。
+
+   ```
+   header: 到达机场
+   question: 雪场周边有这几个机场，样本日 <日期> 的对比如下（车程已含预留）：
+             <机场A>  车程 XhXX  最低 ¥<P>  进场 <HH:MM>  <N> 班
+             <机场B>  车程 YhYY  最低 ¥<Q>  进场 <HH:MM>  <M> 班
+             选哪个作为主选？
+   options:
+     - <机场A>（车程短）
+     - <机场B>（票价低）
+     - 两个都纳入，让方案自己比
+   ```
+
+5. 选定后若需单独复核车程（或只有一个机场），查一次：
 
    ```bash
    node scripts/amap_route.js --from "<机场名称>" --to "<雪场名称>" --from-city <城市>
    ```
 
    脚本输出 `toResortMinutes` = 驾车用时 + 预留，预留算子为 **+20% 且至少 +15 分钟**，用 `--buffer-pct` / `--buffer-min` 调整。冬季山路、夜间、雪天场景把比例取到 30% 以上。
-3. 把「驾车 X 分钟 + 预留 Y 分钟 = Z 分钟」明确写进给用户的确认卡，Z 直接决定能滑多久。
-4. 用户没有高德 key 时，询问「单程车程大概多少分钟」，加预留后把增量告知用户。
-5. 查证雪场营业时间：日场起止、有无夜场及其起止、**哪几天不开放夜场**。来源取官方公示，查不到则问用户。
-6. **输出行程骨架并请用户确认**，格式见 `references/intake.md`。
+6. 把「驾车 X 分钟 + 预留 Y 分钟 = Z 分钟」明确写进给用户的确认卡，Z 直接决定能滑多久。
+7. 用户没有高德 key 时，把候选机场列给用户，请他给每个机场的单程车程分钟数，加预留后把增量告知用户。
+8. 查证雪场营业时间：日场起止、有无夜场及其起止、**哪几天不开放夜场**。来源取官方公示，查不到则问用户。
+9. **输出行程骨架并请用户确认**，格式见 `references/intake.md`。
+
+多机场方案在后续阶段的两条约束：`scenarios[].out` / `.ret` 里每条航班补 `airport` 三字码；`destAirport.toResortMinutes` 取各机场车程中最长的一段，并在报告里说明。
 
 ### 第 2 步：采集参数
 
@@ -67,6 +97,7 @@ node scripts/flight_query.js \
 
 - `--type both` 同时取直飞与中转；默认 `--repeat 2` 执行两次查询并取并集，用于补齐班次。
 - `--repeat 1` 用于快速试探，定稿前用默认值再跑一次。
+- **用户选了多个机场时**，对每个到达机场各执行一次，把结果合并进同一个 `out` / `ret` 数组，并给每条补上 `airport` 三字码。
 - 输出为 JSON 数组，字段与 config 的航班对象一致，直接拼进 `scenarios[].out` / `.ret`。
 - 同一航班号在同一日期出现多条时以最低价为准。
 - 跨日航班由脚本自动填 `arrDate`，人工核对一遍首末条。
@@ -158,7 +189,10 @@ $env:WENDAO_API_KEY = [Environment]::GetEnvironmentVariable('WENDAO_API_KEY','Us
 | `scripts/planner.js` | 测算引擎 + HTML 生成。纯参数驱动，无内置地点/日期，缺参即报错 |
 | `scripts/flight_query.js` | 航班检索（携程问道接口），输出可直接写入 config 的航班数组 |
 | `scripts/amap_route.js` | 高德驾车用时查询，输出含预留的 `toResortMinutes` |
-| `scripts/keys.js` | 凭据登记表与缺 key 引导文案，三个脚本共用 |
+| `scripts/airport_scan.js` | 多机场预查：同一天的票价 + 车程横向对比，供用户选机场 |
+| `scripts/wendao.js` | 航班检索与解析实现，被上面两个检索脚本共用 |
+| `scripts/amap.js` | 地理编码与驾车路径规划实现，被上面两个路线脚本共用 |
+| `scripts/keys.js` | 凭据登记表与缺 key 引导文案，所有脚本共用 |
 | `scripts/doctor.js` | 凭据状态检查；`--probe` 发真实请求验证 |
 | `references/intake.md` | 问答脚本：该问什么、选项怎么给、骨架确认卡长什么样 |
 | `references/config-schema.md` | config.json 逐字段说明与可复制骨架 |
