@@ -23,7 +23,7 @@ from pathlib import Path
 
 # 仅开发期使用、不该出现在分发产物里的文件与前缀
 EXCLUDE_PREFIXES = ("tools/",)
-EXCLUDE_FILES = {".gitignore"}
+EXCLUDE_FILES = {".gitignore", "README.md"}
 
 
 def skill_name_of(root: Path) -> str:
