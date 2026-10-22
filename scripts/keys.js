@@ -7,14 +7,14 @@
  * 凭据只从环境变量读取：不写入文件、不作为命令行参数传递、不回显完整内容。
  *
  * 三个 key 分三档（role）：
- *   required  必选。缺了拿不到票价，但**不是死路**——可以走手动录入模式。
- *   optional  可选。缺了降级，不影响主线。
- *   fallback  兜底。只有主路径给不出值、或需要精确值时才用。
+ *   required     必选。缺了拿不到票价，但**不是死路**——可以走手动录入模式。
+ *   recommended  建议配置。缺了降级，主线仍能跑完，只是少了粗筛这一步。
+ *   fallback     兜底。只有主路径给不出值、或需要精确值时才用。
  */
 
 const ROLES = {
   required: '必选',
-  optional: '可选',
+  recommended: '建议',
   fallback: '兜底',
 };
 
@@ -36,13 +36,15 @@ const SPECS = {
   },
   WENDAO_API_KEY: {
     service: '携程问道',
-    usage: '一次问全的机场对比 / 执飞校验（可选，不封 CLI）',
-    role: 'optional',
+    usage: '一次问全的机场对比 / 执飞校验（建议配置，不封 CLI）',
+    role: 'recommended',
     applyUrl: 'https://www.ctrip.com/wendao/openclaw',
     applyNote: '按页面指引申请并复制 API token；按日配额，比飞常准宽松，适合反复粗筛',
     probeCost: '消耗 1 次日配额，响应 20–60 秒 —— 所以默认不探活，加 --probe-wendao 才测',
     example: "curl -sS -X POST 'https://externalcallback.ctrip.com/skills/api/crew/skillhub/searchInfo' -H 'Content-Type: application/json' -d \"{\\\"inputs\\\":{\\\"token\\\":\\\"$WENDAO_API_KEY\\\",\\\"query\\\":\\\"<提示词>\\\"}}\"",
-    fallback: '不配置也能跑完整流程：跳过机场对比，直接把候选机场列给用户选；也失去执飞状态的交叉校验。提示词见 references/wendao-prompts.md。',
+    fallback: '不配置时跳过机场对比，直接把候选机场列给用户选。'
+      + '**不要改用飞常准代做粗筛** —— 飞常准按城市对扣积分，只留给第 3 步的详细检索。'
+      + '提示词见 references/wendao-prompts.md。',
   },
   AMAP_API_KEY: {
     service: '高德开放平台',
@@ -64,9 +66,9 @@ const padEnd = (s, w) => s + ' '.repeat(Math.max(0, w - textWidth(s)));
 
 const read = (envName) => (process.env[envName] || '').trim();
 
-/** 展示顺序：必选 → 可选 → 兜底 */
+/** 展示顺序：必选 → 建议 → 兜底 */
 const ORDER = Object.keys(SPECS).sort((a, b) => {
-  const rank = { required: 0, optional: 1, fallback: 2 };
+  const rank = { required: 0, recommended: 1, fallback: 2 };
   return rank[SPECS[a].role] - rank[SPECS[b].role];
 });
 

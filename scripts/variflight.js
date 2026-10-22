@@ -3,7 +3,8 @@
 /**
  * variflight.js — 飞常准 MCP 航班票价检索封装
  *
- * 被 flight_query.js / airport_scan.js 共用。
+ * 只用于**详细检索**（第 3 步）：给定日期窗口，拿全量候选与含税票价。
+ * 不要拿它做机场粗筛/预查——按城市对扣积分，粗筛一律走携程问道或让用户手选。
  *
  * 计费模型（实测）：
  *   - 搜索 flights(...)：1 积分 / 唯一「出发城市→到达城市」O-D 对，日期不重复计费
@@ -437,7 +438,9 @@ async function queryFlights(opts) {
 
     if (data.truncated) {
       truncated = true;
-      log('    ⚠ 返回被截断（truncated: true），有数据没回来，请减小 --chunk 或 --per-transfer');
+      log('    ⚠ 返回被截断（truncated: true），后面的日期可能整段没回来');
+      log('      干线航线（京沪广深之间）单日就能到 100+ 行，改用 --chunk 1 让每天单独一批');
+      log('      注意：重跑是一次新的 tools/call，会再扣积分，所以宁可一开始就保守');
     }
 
     const byDate = new Map(batch.map((b) => [b.date, b]));

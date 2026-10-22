@@ -181,9 +181,14 @@ function nightsOf(o, r) {
   const rAd = r.arrDate || r.date;
   const total = Math.max(0, dayNum(rAd) - dayNum(o.date));
   const redEye = (t) => hhmm(t, 'arr') < RED_EYE;
-  const transOut = redEye(o.arr) ? 0 : Math.max(0, dayNum(oAd) - dayNum(o.date));
-  const transRet = redEye(r.arr) ? 0 : Math.max(0, dayNum(rAd) - dayNum(r.date));
-  const resort = Math.max(0, total - transOut - transRet);
+  const spanOut = Math.max(0, dayNum(oAd) - dayNum(o.date));
+  const spanRet = Math.max(0, dayNum(rAd) - dayNum(r.date));
+  const transOut = redEye(o.arr) ? 0 : spanOut;
+  const transRet = redEye(r.arr) ? 0 : spanRet;
+  // 红眼落地的那一晚是机上过夜，整体不计住宿；不能因 transOut/transRet 归零就并进雪场晚
+  const freeOut = redEye(o.arr) ? spanOut : 0;
+  const freeRet = redEye(r.arr) ? spanRet : 0;
+  const resort = Math.max(0, total - transOut - transRet - freeOut - freeRet);
   return { total, resort, transOut, transRet, trans: transOut + transRet };
 }
 

@@ -181,7 +181,10 @@ const run = journal.begin('flight_query.js', args, { enabled: !hasFlag('no-journ
   log('');
   log('实际调用 ' + meta.calls + ' 次，返回 ' + meta.rows + ' 行，去重后 ' + flights.length + ' 条');
   log('积分消耗约 ' + meta.credits + '（O-D 对：' + meta.odPairs.join(' / ') + '）');
-  if (meta.truncated) log('⚠ 有调用被截断，结果不完整');
+  if (meta.truncated) {
+    log('⚠ 有调用被截断，结果不完整（靠后的日期可能整段缺失）');
+    log('  干线航线请用 --chunk 1 让每天单独一批；重跑会再扣积分，所以宁可在第一次就保守');
+  }
 
   const c = meta.cache;
   if (c.mode !== 'off') {

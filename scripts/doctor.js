@@ -173,7 +173,7 @@ async function main() {
   const requiredOk = requiredRows.every((r) => r.set && (!r.probe || r.probe.ok));
   const fallbackRow = rows.find((r) => r.role === 'fallback');
   const fallbackOk = !fallbackRow || !fallbackRow.set || !fallbackRow.probe || fallbackRow.probe.ok;
-  const optionalOk = rows.filter((r) => r.role === 'optional').every((r) => !r.set || !r.probe || r.probe.ok);
+  const recommendedOk = rows.filter((r) => r.role === 'recommended').every((r) => !r.set || !r.probe || r.probe.ok);
 
   const cs = cacheStatus();
 
@@ -219,7 +219,7 @@ async function main() {
     process.exit(1);
   }
 
-  // 必选没问题，再看兜底与可选
+  // 必选没问题，再看兜底与建议项
   if (!fallbackOk) {
     console.log('→ 高德凭据不可用（兜底项）：仅在问道给不出车程、或需要精确值时才会用到，可先跳过。');
     console.error(guide('AMAP_API_KEY', {
@@ -228,17 +228,24 @@ async function main() {
     process.exit(0);
   }
 
-  if (!optionalOk) {
-    const w = rows.find((r) => r.role === 'optional');
-    console.log('→ 问道凭据不可用（可选项）：跳过机场对比，直接把候选机场列给用户选即可继续。');
+  if (!recommendedOk) {
+    const w = rows.find((r) => r.role === 'recommended');
+    console.log('→ 问道凭据不可用（建议项）：跳过机场对比，直接把候选机场列给用户选。');
+    console.log('  不要改用飞常准代做粗筛 —— 它按城市对扣积分，只留给第 3 步的详细检索。');
     console.error(guide('WENDAO_API_KEY', {
       reason: '环境变量 WENDAO_API_KEY 已设置但不可用（' + (w.probe ? w.probe.detail : '未通过验证') + '）',
     }));
     process.exit(0);
   }
 
-  const missing = rows.filter((r) => !r.set).map((r) => r.roleLabel + ' ' + r.env);
-  console.log('→ 必选凭据可用，进入流程。' + (missing.length ? '未配置：' + missing.join('、') + '（按各自降级路径继续）' : ''));
+  const missing = rows.filter((r) => !r.set);
+  const tail = missing.length
+    ? '未配置：' + missing.map((r) => r.roleLabel + ' ' + r.env).join('、') + '（按各自降级路径继续）'
+    : '';
+  console.log('→ 必选凭据可用，进入流程。' + tail);
+  if (missing.some((r) => r.role === 'recommended')) {
+    console.log('  建议补上问道：它是粗筛的唯一来源，缺了只能让用户手选机场，不要用飞常准顶替。');
+  }
   process.exit(0);
 }
 

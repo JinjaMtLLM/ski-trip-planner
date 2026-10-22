@@ -3,7 +3,7 @@
 /**
  * amap.js — 高德开放平台封装（地理编码 + 驾车路径规划）
  *
- * 被 amap_route.js（单条路线）与 airport_scan.js（多机场对比）共用。
+ * 被 amap_route.js 使用（机场 → 雪场单条路线）。
  * key 仅从环境变量 AMAP_API_KEY 读取。失败时抛出 AmapError，由调用方决定如何退出。
  */
 

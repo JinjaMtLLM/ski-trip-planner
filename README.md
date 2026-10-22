@@ -16,11 +16,13 @@ No resort, airport, date or price is hard-coded. Every number comes from the use
 
 | Variable | Role | Service | Used for | Get it at |
 |---|---|---|---|---|
-| `VARIFLIGHT_MCP_KEY` | **required** | Variflight MCP | flights, times, tax-inclusive fares, seats | https://cmcp.variflight.com/ |
-| `WENDAO_API_KEY` | optional | Ctrip Wendao | one-shot airport comparison, operating-status check | https://www.ctrip.com/wendao/openclaw |
+| `VARIFLIGHT_MCP_KEY` | **required** | Variflight MCP | detailed flight search only — full candidate set, tax-inclusive fares, seats | https://cmcp.variflight.com/ |
+| `WENDAO_API_KEY` | **recommended** | Ctrip Wendao | the only source for airport rough-screening, plus operating-status checks | https://www.ctrip.com/wendao/openclaw |
 | `AMAP_API_KEY` | fallback | Amap (Gaode) | driving time, only when Wendao can't supply it or you need an exact figure | https://console.amap.com/dev/key/app |
 
 The Amap key must be a **Web Service** key with *Geocoding* and *Driving Direction* enabled. Keys are never written to `config.json`, never passed as command-line arguments, and never echoed back in full.
+
+**Variflight is billed per origin→destination city pair, so it is reserved for detailed search.** It must never be used to probe "does this route have flights" or to compare candidate airports — that is what the Wendao key is for, and if you skip it the skill asks *you* to pick the airport rather than quietly spending credits.
 
 **None of the three is a dead end.** You can decline all of them and still get a full report — see [Manual mode](#manual-mode).
 
@@ -154,7 +156,6 @@ Disable with `--no-journal` or `SKI_NO_JOURNAL=1`.
 | `scripts/journal.js` | Run journal: per-run record of commands, step I/O, failing SQL and cache keys, so a broken chain can be repaired without replaying it |
 | `scripts/mcp_config.js` | One-command MCP setup: merges `variflight-mcp` into `~/.workbuddy-ai/mcp.json` with backup, `--check`, `--print`, `--remove` |
 | `scripts/amap_route.js` | Amap driving time, outputs `toResortMinutes` including the buffer |
-| `scripts/airport_scan.js` | Optional: precise multi-airport pre-query (fare + drive time on one date). Costs Variflight credits — the main flow rough-screens with Wendao instead |
 | `scripts/wendao.js` | Ctrip Wendao request/parse implementation for programmatic use; not on the main path |
 | `scripts/amap.js` | Geocoding and driving route implementation, shared by the route scripts |
 | `scripts/keys.js` | Credential registry and the shared missing-key guide |
@@ -188,10 +189,10 @@ The bundler uses the git file list, so `.gitignore` is respected and `.git/` nev
 
 - Fares and schedules come from third-party services as point-in-time snapshots. Prices move, connections get re-timed. Verify every itinerary on the booking page before paying.
 - Only the flight lookup truly needs a key. `planner.js` needs nothing, so a total refusal to configure credentials degrades to [manual mode](#manual-mode) rather than to failure.
-- Flight data comes from the **Variflight MCP** (`c-gw.variflight.com`), which is billed in credits: **100 credits per month**, charged **once per unique origin→destination city pair**, regardless of how many dates you search. `initialize` / `tools/list` are free. A single round-trip weekend therefore costs 2 credits no matter how many leave buckets you enumerate. If you run out, swap the key.
+- Flight data comes from the **Variflight MCP** (`c-gw.variflight.com`), which is billed in credits: **100 credits per month**, charged **once per unique origin→destination city pair**, regardless of how many dates you search. `initialize` / `tools/list` are free. A single round-trip weekend therefore costs 2 credits no matter how many leave buckets you enumerate. Because of that pricing it is used **only** for the detailed search step. If you run out, swap the key.
 - The MCP returns at most **200 rows per SQL query** and flags it as `truncated: true`. The query builder ranks rows per direction and per transfer count so one direction can never crowd out the other, but on very dense routes you may still need a smaller `--per-transfer` or `--chunk`.
 - Cached responses are point-in-time snapshots, exactly like live ones — a 6-hour-old cache is still a 6-hour-old price. Check `meta.dataAt` before quoting a fare, and prefer `--refresh` right before you book.
-- **Wendao is not a fare source.** It is used in one call to rough-screen candidate airports (flight counts, earliest/latest landing, fare ballpark with elapsed time, drive time, resort hours) and optionally once more to confirm that a given flight operates on a given day. Its transfer coverage is roughly 9%, it sometimes misreports flight numbers, it quotes bare fares without taxes, it merges night sessions into day hours, and it is not reproducible (the same prompt can answer differently twice). Nothing from Wendao is written into `config.json`.
+- **Wendao is not a fare source**, but it *is* the only rough-screening source. It is used in one call to compare candidate airports (flight counts, earliest/latest landing, fare ballpark with elapsed time, drive time, resort hours) and optionally once more to confirm that a given flight operates on a given day. Its transfer coverage is roughly 9%, it sometimes misreports flight numbers, it quotes bare fares without taxes, it merges night sessions into day hours, and it is not reproducible (the same prompt can answer differently twice). Nothing from Wendao is written into `config.json`.
 - The Wendao endpoint behind that skill (`externalcallback.ctrip.com/skills/api/crew/skillhub/searchInfo`) is **not publicly documented** and is not a supported public API — its response format can change, it can start demanding new credentials, or it can stop answering entirely. If that happens you lose only the rough-screening step; flight search still works.
 - Resort hours, lift tickets and lodging prices are inputs you supply; the skill does not verify them.
 - This is an unofficial tool. It is not affiliated with Variflight, Ctrip or Amap, and use of their services is governed by their own terms.
