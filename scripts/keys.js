@@ -19,7 +19,7 @@ const SPECS = {
   },
   WENDAO_API_KEY: {
     service: '携程问道',
-    usage: '机场粗筛 / 骨架摸底 / 执飞校验（可选，不封 CLI）',
+    usage: '一次问全的机场对比 / 执飞校验（可选，不封 CLI）',
     applyUrl: 'https://www.ctrip.com/wendao/openclaw',
     applyNote: '按页面指引申请并复制 API token；按日配额，比飞常准宽松，适合反复粗筛',
     example: "curl -sS -X POST 'https://externalcallback.ctrip.com/skills/api/crew/skillhub/searchInfo' -H 'Content-Type: application/json' -d \"{\\\"inputs\\\":{\\\"token\\\":\\\"$WENDAO_API_KEY\\\",\\\"query\\\":\\\"<提示词>\\\"}}\"",

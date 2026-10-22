@@ -60,7 +60,7 @@ Either way the destination folder must be named `ski-trip-planner`, matching `SK
 Ask the agent for a ski trip. It runs four steps:
 
 0. **Credentials** — `doctor.js`, and help set up any missing key.
-1. **Destination and airport** — list the airports around the resort, rough-screen them with a plain-language Ctrip Wendao prompt (flight counts, earliest landing, price ballpark), get exact drive times from Amap for the shortlist, and let *you* pick. Then probe the schedule shape and confirm the trip skeleton: resort opening hours, day/night sessions, night-session rest days.
+1. **Destination and airport** — list the airports around the resort, then rough-screen them in **one** plain-language Ctrip Wendao prompt that returns flight counts, earliest/latest landing, fare ballpark *with total elapsed time*, drive time and resort hours per airport. Take exact drive times from Amap for the shortlist, verify resort hours against the official page, and let *you* pick. Then confirm the trip skeleton.
 2. **Parameters** — date range, lodging budget (resort and layover city priced separately), leave buckets, tax per segment, and the three leave-day cut-off times (work start / noon split / work end, default `08:30` / `14:00` / `20:00`).
 3. **Flights** — `flight_query.js`, one call per weekend and direction; it fans the dates out from the leave bucket, direct and connecting. Raw results are cached on disk, so re-running a failed step costs nothing.
 4. **Report** — `planner.js` produces the HTML.
@@ -116,7 +116,7 @@ node scripts/cache.js clear             # start over
 | `scripts/amap.js` | Geocoding and driving route implementation, shared by the route scripts |
 | `scripts/keys.js` | Credential registry and the shared missing-key guide |
 | `scripts/doctor.js` | Credential status; `--probe` verifies against the live APIs |
-| `references/wendao-prompts.md` | Wendao prompt library: airport rough-screen, skeleton probe, operating-status check, plus the phrasing pitfalls and per-field reliability |
+| `references/wendao-prompts.md` | Wendao prompt library: the single combined airport-comparison prompt, the operating-status check, and the phrasing rules that keep it from dropping data |
 | `references/intake.md` | What to ask, how to offer options, the confirmation card |
 | `references/config-schema.md` | Field-by-field `config.json` reference with a copyable skeleton |
 | `references/algorithm.md` | The model: windows, leave-day rules, cost boundaries, sensitivity checks |
@@ -145,7 +145,7 @@ The bundler uses the git file list, so `.gitignore` is respected and `.git/` nev
 - Flight data comes from the **Variflight MCP** (`c-gw.variflight.com`), which is billed in credits: **100 credits per month**, charged **once per unique origin→destination city pair**, regardless of how many dates you search. `initialize` / `tools/list` are free. A single round-trip weekend therefore costs 2 credits no matter how many leave buckets you enumerate. If you run out, swap the key.
 - The MCP returns at most **200 rows per SQL query** and flags it as `truncated: true`. The query builder ranks rows per direction and per transfer count so one direction can never crowd out the other, but on very dense routes you may still need a smaller `--per-transfer` or `--chunk`.
 - Cached responses are point-in-time snapshots, exactly like live ones — a 6-hour-old cache is still a 6-hour-old price. Check `meta.dataAt` before quoting a fare, and prefer `--refresh` right before you book.
-- **Wendao is not a fare source.** It is used only for rough screening and for confirming that a given flight operates on a given day. Its transfer coverage is roughly 9%, it sometimes misreports flight numbers, it quotes bare fares without taxes, and it is not reproducible (the same prompt can answer differently twice). Nothing from Wendao is written into `config.json`.
+- **Wendao is not a fare source.** It is used in one call to rough-screen candidate airports (flight counts, earliest/latest landing, fare ballpark with elapsed time, drive time, resort hours) and optionally once more to confirm that a given flight operates on a given day. Its transfer coverage is roughly 9%, it sometimes misreports flight numbers, it quotes bare fares without taxes, it merges night sessions into day hours, and it is not reproducible (the same prompt can answer differently twice). Nothing from Wendao is written into `config.json`.
 - The Wendao endpoint behind that skill (`externalcallback.ctrip.com/skills/api/crew/skillhub/searchInfo`) is **not publicly documented** and is not a supported public API — its response format can change, it can start demanding new credentials, or it can stop answering entirely. If that happens you lose only the rough-screening step; flight search still works.
 - Resort hours, lift tickets and lodging prices are inputs you supply; the skill does not verify them.
 - This is an unofficial tool. It is not affiliated with Variflight, Ctrip or Amap, and use of their services is governed by their own terms.
