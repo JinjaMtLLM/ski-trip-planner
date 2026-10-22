@@ -1,0 +1,42 @@
+# ---- 依赖 ----
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# ---- 运行时产物：planner.js 生成的报告 / 数据导出 ----
+*.html
+*.csv
+out/
+dist/
+*.zip
+
+# ---- 本地测试用 config 与临时文件 ----
+_test*.json
+_bad*.json
+_*.json
+_*.txt
+_*.html
+config.local.json
+*.local.json
+tmp/
+.tmp/
+
+# ---- 密钥与本地环境 ----
+.env
+.env.*
+!.env.example
+amap_key.txt
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- 日志 ----
+*.log
+npm-debug.log*
