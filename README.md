@@ -59,7 +59,7 @@ Ask the agent for a ski trip. It runs four steps:
 
 0. **Credentials** — `doctor.js`, and help set up any missing key.
 1. **Destination and airport** — list the airports around the resort, pre-query them on one sample date with `airport_scan.js` (driving time plus cheapest fare), and let *you* pick. Then confirm the trip skeleton: resort opening hours, day/night sessions, night-session rest days.
-2. **Parameters** — date range, lodging budget (resort and layover city priced separately), leave buckets, tax per segment, leave-day cut-offs.
+2. **Parameters** — date range, lodging budget (resort and layover city priced separately), leave buckets, tax per segment, and the three leave-day cut-off times (work start / noon split / work end, default `08:30` / `14:00` / `20:00`).
 3. **Flights** — `flight_query.js` per date and direction, direct and connecting.
 4. **Report** — `planner.js` produces the HTML.
 

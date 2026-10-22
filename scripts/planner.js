@@ -92,11 +92,15 @@ const LODGE_RESORT = needNum(P, 'lodgingResort', 'params.lodgingResort');
 const LODGE_TRANS = needNum(P, 'lodgingTransit', 'params.lodgingTransit');
 const RED_EYE = hhmm(P.redEyeArrivalBefore || need(P, 'redEyeArrivalBefore', 'params.redEyeArrivalBefore'), 'params.redEyeArrivalBefore');
 
-// 请假规则
-const RULE = need(P, 'leave', 'params.leave');
-const HALF_AT = hhmm(need(RULE, 'halfDayAt', 'params.leave.halfDayAt'), 'params.leave.halfDayAt');
-const FREE_AFTER = hhmm(need(RULE, 'freeAfter', 'params.leave.freeAfter'), 'params.leave.freeAfter');
-const FREE_ARR = hhmm(need(RULE, 'freeArrivalBefore', 'params.leave.freeArrivalBefore'), 'params.leave.freeArrivalBefore');
+// 请假规则：上班时刻 / 半天分界 / 下班时刻，三段各自独立
+const RULE = need(P, 'leave', 'params.leave（含 dayStart / halfDayAt / dayEnd）');
+const DAY_START = hhmm(need(RULE, 'dayStart', 'params.leave.dayStart（上班时刻）'), 'params.leave.dayStart');
+const HALF_AT = hhmm(need(RULE, 'halfDayAt', 'params.leave.halfDayAt（半天分界）'), 'params.leave.halfDayAt');
+const DAY_END = hhmm(need(RULE, 'dayEnd', 'params.leave.dayEnd（下班时刻）'), 'params.leave.dayEnd');
+if (!(DAY_START < HALF_AT && HALF_AT < DAY_END)) {
+  die('params.leave 三个时刻需满足 dayStart < halfDayAt < dayEnd（当前 '
+    + RULE.dayStart + ' / ' + RULE.halfDayAt + ' / ' + RULE.dayEnd + '）');
+}
 const BUCKETS = need(P, 'leaveBuckets', 'params.leaveBuckets');
 if (!Array.isArray(BUCKETS) || !BUCKETS.length) die('params.leaveBuckets 应为非空数组，如 [0,0.5,1,2]');
 
@@ -121,14 +125,14 @@ function segsOf(f) {
 function outLeave(f) {
   if (isWeekend(f.date)) return 0;
   const t = hhmm(f.dep, 'out.dep');
-  if (t >= FREE_AFTER) return 0;
+  if (t >= DAY_END) return 0;
   if (t >= HALF_AT) return 0.5;
   return 1;
 }
 function returnLeave(f) {
   const ad = f.arrDate || f.date;
   if (isWeekend(ad)) return 0;
-  return hhmm(f.arr, 'ret.arr') <= FREE_ARR ? 0 : 1;
+  return hhmm(f.arr, 'ret.arr') <= DAY_START ? 0 : 1;
 }
 function midWorkdays(outD, retArrD) {
   let c = 0;
@@ -402,7 +406,7 @@ const html = '<!DOCTYPE html>\n<html lang="zh-CN"><head><meta charset="utf-8">'
   + cmpTable()
   + maxHourTable()
   + '<div class="rule"></div>'
-  + '<div class="flag"><b>请假口径</b>　出发端：工作日 <b>' + RULE.freeAfter + ' 后起飞算 0 天</b>，' + RULE.halfDayAt + '–' + RULE.freeAfter + ' 算 0.5 天，' + RULE.halfDayAt + ' 前算 1 天；返程端：工作日 <b>' + RULE.freeArrivalBefore + ' 前落地算 0 天</b>。中途跨越的工作日整天计入。中转按「第一段起飞 / 末段落地」判定。</div>'
+  + '<div class="flag"><b>请假口径</b>　工作日上班 <b>' + RULE.dayStart + '</b>、半天分界 <b>' + RULE.halfDayAt + '</b>、下班 <b>' + RULE.dayEnd + '</b>。出发端：' + RULE.halfDayAt + ' 前起飞算 <b>1 天</b>，' + RULE.halfDayAt + '–' + RULE.dayEnd + ' 算 <b>0.5 天</b>，' + RULE.dayEnd + ' 后起飞算 <b>0 天</b>；返程端：' + RULE.dayStart + ' 前落地算 <b>0 天</b>，之后落地算 <b>1 天</b>。中途跨越的工作日整天计入。中转按「第一段起飞 / 末段落地」判定。</div>'
   + '<div class="flag"><b>税费口径</b>　机场建设费与燃油附加费<b>按航段各收一次</b>，本表按 ¥' + TAX_SEG + '/段计算。直飞单程 1 段，中转单程 2 段，往返翻倍。燃油附加费随油价每月调整，下单前请以出票页含税总价为准。</div>'
   + '<div class="flag"><b>住宿口径</b>　雪场 ¥' + LODGE_RESORT + '/晚、转机 ¥' + LODGE_TRANS + '/晚。<b>红眼航班（' + P.redEyeArrivalBefore + ' 前落地）不计住宿</b>，因其在机上过夜。住宿金额 = 雪场晚 × ' + LODGE_RESORT + ' + 转机晚 × ' + LODGE_TRANS + '，故可能大于「雪场晚 × ' + LODGE_RESORT + '」。</div>'
   + '<div class="warn"><b>数据需复核。</b>航班时刻与票价来自单次查询快照，价格实时浮动；中转方案可能由多次查询拼接，存在航班号、时刻或价格不成立的情况。下单前请逐条在出票渠道核实。</div>'

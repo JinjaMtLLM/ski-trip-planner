@@ -46,11 +46,11 @@
     "lodgingTransit": 80,        // 转机城市过夜 元/晚
     "redEyeArrivalBefore": "05:00", // 早于此时刻落地视为红眼，不计住宿
 
-    // 请假判定三段式
+    // 请假判定：三个时刻各自独立，都必须由用户确认后填入
     "leave": {
-      "halfDayAt": "13:30",          // 在此之前起飞 = 请 1 天
-      "freeAfter": "19:30",          // 在此之后起飞 = 不请假
-      "freeArrivalBefore": "10:00"   // 在此之前的落地 = 不请假
+      "dayStart": "08:30",   // 上班时刻；返程落地不晚于此值 = 不请假
+      "halfDayAt": "14:00",  // 半天分界；起飞早于此值 = 1 天，晚于此值 = 0.5 天
+      "dayEnd": "20:00"      // 下班时刻；起飞不早于此值 = 不请假
     },
 
     // 只保留这些请假档位的组合
@@ -71,6 +71,12 @@
   "sourceNote": "<数据来源与查询时间>" // 可选，会印在报告页脚
 }
 ```
+
+## 请假口径
+
+`params.leave` 的三个时刻决定每一档的边界，取值全部来自用户（问法见 `references/intake.md` 第三轮题 2）。缺任一项、或三者不满足 `dayStart < halfDayAt < dayEnd` 时，`planner.js` 报错退出。
+
+出发端只认 `halfDayAt` 与 `dayEnd`，返程端只认 `dayStart`。改这三个值会直接改变各档包含哪些组合，报告页脚的「请假口径」会印出实际取值。
 
 ## 航班对象
 
@@ -111,7 +117,7 @@
     "lodgingResort": 300,
     "lodgingTransit": 80,
     "redEyeArrivalBefore": "05:00",
-    "leave": { "halfDayAt": "13:30", "freeAfter": "19:30", "freeArrivalBefore": "10:00" },
+    "leave": { "dayStart": "08:30", "halfDayAt": "14:00", "dayEnd": "20:00" },
     "leaveBuckets": [0, 0.5, 1, 2]
   },
   "scenarios": [
