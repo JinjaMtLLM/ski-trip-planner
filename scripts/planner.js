@@ -106,6 +106,10 @@ if (!Array.isArray(BUCKETS) || !BUCKETS.length) die('params.leaveBuckets 应为�
 
 const SOURCE_NOTE = cfg.sourceNote || '';
 
+// 车程来源：高德实测 / 问道估算 / 用户口述。写进报告副标题，避免把估算当实测。
+const DRIVE_SRC_LABEL = { amap: '高德实测', wendao: '问道估算', user: '用户口述' };
+const DRIVE_SRC = DRIVE_SRC_LABEL[String(DEST.toResortMinutesSource || '').toLowerCase()] || '';
+
 // ---------------------------------------------------------------- 工具函数
 const wdStr = (s) => String(s).slice(0, 10);
 const dayNum = (s) => Math.floor(Date.parse(wdStr(s) + 'T00:00:00Z') / 86400000);
@@ -432,7 +436,9 @@ const html = '<!DOCTYPE html>\n<html lang="zh-CN"><head><meta charset="utf-8">'
     : '')
   + '</ul></div>'
   + '<div class="rule"></div>'
-  + '<div class="sub">' + (SOURCE_NOTE ? SOURCE_NOTE + ' · ' : '') + '雪场营业时间以官方公示为准。价格实时浮动，下单前请复核。</div>'
+  + '<div class="sub">' + (SOURCE_NOTE ? SOURCE_NOTE + ' · ' : '')
+  + (DRIVE_SRC ? '车程：' + DRIVE_SRC + '（' + TO_RESORT + ' 分钟） · ' : '')
+  + '雪场营业时间以官方公示为准。价格实时浮动，下单前请复核。</div>'
   + '</div>'
   + '<script>'
   + 'document.querySelectorAll(".tab").forEach(function(t){t.onclick=function(){'

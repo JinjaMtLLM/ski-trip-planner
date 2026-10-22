@@ -155,7 +155,7 @@ async function callToolCached(name, args, ctx = {}) {
     if (v.serve) {
       const note = v.reason === 'incomplete' ? '，但上次结果被截断' : '';
       log('    ↳ 命中缓存（' + cache.formatAge(v.age) + '前' + note + '），不消耗积分');
-      return { doc: v.doc, cached: true, stale: v.reason !== 'fresh', entry: hit };
+      return { doc: v.doc, cached: true, stale: v.reason !== 'fresh', entry: hit, key };
     }
     if (v.reason === 'stale') log('    ↳ 缓存已过期（' + cache.formatAge(v.age) + '前），重新查询');
     else if (v.reason === 'incomplete') log('    ↳ 缓存不完整（上次被截断），重新查询；调小 --per-transfer 或 --chunk 才有意义');
@@ -180,13 +180,13 @@ async function callToolCached(name, args, ctx = {}) {
         raw,
       });
     }
-    return { doc, cached: false, sessionId: sid };
+    return { doc, cached: false, sessionId: sid, key };
   } catch (e) {
     if (mode !== 'off' && hit) {
       const v = cache.assess(hit, { allowStale: true, allowIncomplete: true });
       if (v.serve) {
         log('    ⚠ 查询失败（' + e.message + '），回退到缓存（' + cache.formatAge(v.age) + '前的数据）');
-        return { doc: v.doc, cached: true, stale: true, fallback: true, entry: hit, error: e };
+        return { doc: v.doc, cached: true, stale: true, fallback: true, entry: hit, error: e, key };
       }
     }
     // 失败也记一笔，便于事后排查；这类条目永远不会被当成数据返回
@@ -345,6 +345,7 @@ function leaveWindow(anyDate, leaveDays) {
  * @param {number} [opts.perTransfer=15]  每个日期保留的中转条数
  * @param {number} [opts.chunk=3]         每次调用的数据源上限
  * @param {{mode?:'auto'|'refresh'|'off', ttlMinutes?:number}} [opts.cache]
+ * @param {object} [opts.journal]  运行记录句柄（scripts/journal.js），逐步记录输入输出
  * @param {(msg:string)=>void} [opts.log]
  * @returns {{flights:Array, meta:object}}
  */
@@ -395,15 +396,45 @@ async function queryFlights(opts) {
     const short = dates.map((d) => d.slice(5)).join(' ');
     log(`  [${i + 1}/${batches.length}] ${od} × ${batch.length} 天（${short}）`);
 
-    const res = await callToolCached('getFlightTicketPrice', { sql }, {
-      cache: cacheCfg, session, label: od + ' ' + short, log,
-    });
+    let res;
+    try {
+      res = await callToolCached('getFlightTicketPrice', { sql }, {
+        cache: cacheCfg, session, label: od + ' ' + short, log,
+      });
+    } catch (e) {
+      // 失败的这一步也要留下 SQL，否则上层不知道断在哪个查询上
+      if (opts.journal) {
+        opts.journal.step('call', {
+          input: { od, dates, sql, cacheMode: cacheCfg.mode || 'auto' },
+          error: e,
+          note: '这一步失败，后续批次未执行',
+        });
+      }
+      throw e;
+    }
 
     if (res.cached) hits++;
     if (res.fallback) fallbacks++;
 
     const data = (res.doc.item && res.doc.item.data) || {};
     rows += data.row_count || 0;
+
+    // 把每次调用的输入（SQL）与输出（行数/截断/缓存 key）记进运行记录，
+    // 出错时上层可以据此手工拼结果，不必整条链路重跑
+    if (opts.journal) {
+      opts.journal.step('call', {
+        input: { od, dates, sql, cacheMode: cacheCfg.mode || 'auto' },
+        output: {
+          rowCount: data.row_count || 0,
+          sourceCount: data.source_count || 0,
+          truncated: Boolean(data.truncated),
+          cached: Boolean(res.cached),
+          fallback: Boolean(res.fallback),
+        },
+        cacheKey: res.key,
+      });
+    }
+
     if (data.truncated) {
       truncated = true;
       log('    ⚠ 返回被截断（truncated: true），有数据没回来，请减小 --chunk 或 --per-transfer');

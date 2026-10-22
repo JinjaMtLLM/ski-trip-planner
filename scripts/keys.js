@@ -3,37 +3,57 @@
 /**
  * keys.js — 外部服务凭据登记表，以及缺 key 时给用户的引导文案
  *
- * 被 amap_route.js / flight_query.js / doctor.js 共用，保证三处输出一致。
+ * 被 amap_route.js / flight_query.js / doctor.js / mcp_config.js 共用，保证三处输出一致。
  * 凭据只从环境变量读取：不写入文件、不作为命令行参数传递、不回显完整内容。
+ *
+ * 三个 key 分三档（role）：
+ *   required  必选。缺了拿不到票价，但**不是死路**——可以走手动录入模式。
+ *   optional  可选。缺了降级，不影响主线。
+ *   fallback  兜底。只有主路径给不出值、或需要精确值时才用。
  */
+
+const ROLES = {
+  required: '必选',
+  optional: '可选',
+  fallback: '兜底',
+};
 
 const SPECS = {
   VARIFLIGHT_MCP_KEY: {
     service: '飞常准 MCP',
     usage: '航班号 / 时刻 / 含税票价 / 余票（主数据源）',
+    role: 'required',
     applyUrl: 'https://cmcp.variflight.com/',
-    applyNote: '微信扫码或手机号登录，在控制台生成 MCP Key；每月 100 积分，按唯一「出发→到达」城市对计费',
+    applyNote: '微信扫码或手机号登录 → 控制台生成 MCP Key。每月 100 积分，按唯一「出发→到达」城市对计费',
+    probeCost: '免费 —— initialize + tools/list 不扣积分',
     example: 'node scripts/flight_query.js --from SZX --to CGQ --weekend 2026-12-11 --leave-days 1 --both --out w1.json',
-    required: true,
-    fallback: '也可以把 Key 写进 ~/.workbuddy-ai/mcp.json 的 variflight-mcp.headers.Authorization（Bearer <Key>），脚本会自动读取。',
+    quickSetup: 'node scripts/mcp_config.js --write',
+    quickSetupNote: '写进 ~/.workbuddy-ai/mcp.json（已有配置先备份），之后所有脚本自动读取；'
+      + '还需在 WorkBuddy 连接器管理页右上角「自定义连接器」里点 Trust 启用',
+    fallback: '也可以只设环境变量 VARIFLIGHT_MCP_KEY，脚本优先读它。',
+    manual: '完全不配置时走「手动录入航班」模式：用户自己给航班时刻与价格，或由你按公开信息整理后请用户核对，'
+      + '再手工拼 config.json 交给 planner.js。见 references/manual-flights.md。',
   },
   WENDAO_API_KEY: {
     service: '携程问道',
     usage: '一次问全的机场对比 / 执飞校验（可选，不封 CLI）',
+    role: 'optional',
     applyUrl: 'https://www.ctrip.com/wendao/openclaw',
     applyNote: '按页面指引申请并复制 API token；按日配额，比飞常准宽松，适合反复粗筛',
+    probeCost: '消耗 1 次日配额，响应 20–60 秒 —— 所以默认不探活，加 --probe-wendao 才测',
     example: "curl -sS -X POST 'https://externalcallback.ctrip.com/skills/api/crew/skillhub/searchInfo' -H 'Content-Type: application/json' -d \"{\\\"inputs\\\":{\\\"token\\\":\\\"$WENDAO_API_KEY\\\",\\\"query\\\":\\\"<提示词>\\\"}}\"",
-    required: false,
-    fallback: '不配置也能跑完整流程：跳过机场粗筛，直接把候选机场列给用户选；也失去执飞状态的交叉校验。提示词见 references/wendao-prompts.md。',
+    fallback: '不配置也能跑完整流程：跳过机场对比，直接把候选机场列给用户选；也失去执飞状态的交叉校验。提示词见 references/wendao-prompts.md。',
   },
   AMAP_API_KEY: {
     service: '高德开放平台',
-    usage: '地理编码 + 驾车路径规划（机场 → 雪场 车程）',
+    usage: '驾车路径规划（机场 → 雪场 车程，兜底与精确值）',
+    role: 'fallback',
     applyUrl: 'https://console.amap.com/dev/key/app',
     applyNote: '创建应用后新增 Key，服务平台选「Web服务」，并开通「地理编码」与「驾车路径规划」',
+    probeCost: '消耗 1 次地理编码额度（在免费额度内，不计费）',
     example: 'node scripts/amap_route.js --from "<机场名称>" --to "<雪场名称>" --from-city "<城市>"',
-    required: false,
-    fallback: '不提供 key 时，改问「单程车程大概多少分钟」，加预留后继续，并在报告里注明车程为估算值。',
+    fallback: '只有问道给不出车程、或用户要求精确值、或没配问道 key 时才需要。'
+      + '都没有时问用户「单程车程大概多少分钟」，加预留后继续，并在报告里注明是估算。',
   },
 };
 
@@ -44,16 +64,22 @@ const padEnd = (s, w) => s + ' '.repeat(Math.max(0, w - textWidth(s)));
 
 const read = (envName) => (process.env[envName] || '').trim();
 
+/** 展示顺序：必选 → 可选 → 兜底 */
+const ORDER = Object.keys(SPECS).sort((a, b) => {
+  const rank = { required: 0, optional: 1, fallback: 2 };
+  return rank[SPECS[a].role] - rank[SPECS[b].role];
+});
+
 function status(envName) {
   const spec = SPECS[envName];
   if (!spec) throw new Error('未登记的凭据：' + envName);
   const value = read(envName);
-  return { env: envName, spec, set: Boolean(value), length: value.length };
+  return { env: envName, spec, set: Boolean(value), length: value.length, role: spec.role };
 }
 
 function statusLine(st) {
   const state = st.set ? `已设置（${st.length} 位）` : '未设置';
-  return padEnd(st.env, 20) + padEnd(state, 16) + st.spec.service + ' · ' + st.spec.usage;
+  return padEnd(st.env, 20) + padEnd(state, 16) + padEnd(ROLES[st.spec.role] || '', 5) + st.spec.service;
 }
 
 /**
@@ -62,6 +88,7 @@ function statusLine(st) {
  */
 function guide(envName, opts) {
   const spec = SPECS[envName];
+  const role = ROLES[spec.role] || '';
   const rows = [
     ['macOS / Linux', `export ${envName}='你的 key'`],
     ['Windows CMD', `set ${envName}=你的 key`],
@@ -73,24 +100,38 @@ function guide(envName, opts) {
   const item = (n, label, text) => `  ${n}. ${padEnd(label, 6)}${text}`;
 
   const lines = [
-    (opts && opts.reason) || `缺少环境变量 ${envName}`,
+    ((opts && opts.reason) || `缺少环境变量 ${envName}`) + (role ? `    [${role}]` : ''),
     `  ${padEnd('用途', 9)}${spec.service} · ${spec.usage}`,
     '',
     item(1, '获取', spec.applyUrl),
     `${IND}${spec.applyNote}`,
-    item(2, '设置', `变量名须完全一致：${envName}`),
+  ];
+
+  if (spec.quickSetup) {
+    lines.push(
+      item(2, '一键', `${envName}="你的 key" ${spec.quickSetup}`),
+      `${IND}${spec.quickSetupNote}`,
+      item(3, '设置', `或者只设环境变量，变量名须完全一致：${envName}`),
+    );
+  } else {
+    lines.push(item(2, '设置', `变量名须完全一致：${envName}`));
+  }
+
+  lines.push(
     ...rows.map((r) => `${IND}${padEnd(r[0], w)}${r[1]}`),
-    item(3, '单次', `${envName}="你的 key" ${spec.example}`),
+    item(spec.quickSetup ? 4 : 3, '单次', `${envName}="你的 key" ${spec.example}`),
     `${IND}仅对本次进程生效，不写入任何文件`,
-    item(4, '验证', 'node scripts/doctor.js --probe'),
+    item(spec.quickSetup ? 5 : 4, '验证', 'node scripts/doctor.js --probe'),
+    `${IND}检测成本：${spec.probeCost}`,
     '',
     opts && opts.tail
       ? '  ' + opts.tail
       : (opts && opts.reason
         ? '  按上面步骤重新申请或更换 key，然后在同一终端会话内重跑原命令。凭据只从环境变量读取：不写入 config、不写进脚本文件、不作为命令行参数传递、回复中不回显完整内容。'
         : '  设置后重跑原命令即可。凭据只从环境变量读取：不写入 config、不写进脚本文件、不作为命令行参数传递、回复中不回显完整内容。'),
-  ];
+  );
   if (spec.fallback) lines.push('  ' + spec.fallback);
+  if (spec.manual) lines.push('  ' + spec.manual);
   return lines.join('\n');
 }
 
@@ -100,6 +141,25 @@ function requireKey(envName) {
   if (st.set) return st;
   console.error('\u2716 ' + guide(envName));
   process.exit(1);
+}
+
+/**
+ * 「一个都不配」时的说明。skill 必须允许用户拒绝配置所有凭据，
+ * 这条路径不能只是「报错退出」，得能真的把行程算出来。
+ */
+function manualGuide(what) {
+  return [
+    (what || '没有可用的航班数据源') + '。可以完全不配置任何 key，改用手动录入：',
+    '',
+    '  1. 你（或用户）提供航班：出发地、到达地、日期、航班号、起飞/落地时刻、票面价，'
+      + '中转再补中转城市与停留时长',
+    '  2. 按 references/config-schema.md 的航班对象拼成 { out, ret } 两个数组',
+    '  3. 填好 config.json，跑 node scripts/planner.js config.json',
+    '',
+    '  唯一拿不到的是「自动比价」——planner 的测算逻辑不依赖任何 API，',
+    '  手动录入的航班照样能算出各请假档位的元/雪时排名。',
+    '  详细字段与示例见 references/manual-flights.md。',
+  ].join('\n');
 }
 
 /**
@@ -129,4 +189,7 @@ function detectWendaoError(text) {
   return null;
 }
 
-module.exports = { SPECS, status, statusLine, guide, requireKey, detectWendaoError, textWidth, padEnd };
+module.exports = {
+  SPECS, ROLES, ORDER, status, statusLine, guide, requireKey, manualGuide,
+  detectWendaoError, textWidth, padEnd,
+};

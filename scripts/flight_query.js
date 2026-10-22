@@ -29,6 +29,12 @@
  *   --out <file>               写入文件
  *   --raw                      只打印本次调用的元信息（积分、行数、截断、缓存）
  *   --quiet                    不打印进度
+ *   --no-journal               不写运行记录（默认每次都写，见下）
+ *
+ * 运行记录（给「脚本出错后手工补救」用）：
+ *   每次运行写一份 <缓存目录>/runs/<时间>-<pid>-flight_query.js.json，
+ *   含完整命令行、每步输入输出、每次调用的 SQL 与缓存 key、出错位置与建议。
+ *   出错时会把路径打出来；node scripts/journal.js list 可以看历史。
  *
  * 缓存（查询很贵，重跑不该再花一次钱）：
  *   --no-cache                 不读也不写缓存，强制真查
@@ -46,6 +52,7 @@
 const fs = require('fs');
 const { tokenSource } = require('./variflight');
 const { queryFlights, leaveWindow, VariflightError } = require('./variflight');
+const journal = require('./journal');
 
 function die(msg, hint) {
   console.error('\u2716 ' + msg + (hint ? '\n  ' + hint : ''));
@@ -119,6 +126,9 @@ if (WEEKEND || LEAVE !== undefined) {
 
 const BOTH = hasFlag('both') || Boolean(WEEKEND);
 
+// 运行记录：即使后面抛错，catch 里也能拿到它写快照
+const run = journal.begin('flight_query.js', args, { enabled: !hasFlag('no-journal') });
+
 // ── 执行 ────────────────────────────────────────────────────────────────
 (async () => {
   const log = hasFlag('quiet') ? () => {} : (m) => console.error(m);
@@ -139,13 +149,18 @@ const BOTH = hasFlag('both') || Boolean(WEEKEND);
   for (const d of outDates) sources.push({ from: FROM, to: TO, date: d });
   if (BOTH) for (const d of retDates) sources.push({ from: TO, to: FROM, date: d });
 
+  run.step('request', {
+    input: { FROM, TO, BOTH, outDates, retDates, TYPE, perTransfer, chunk, cache: CACHE },
+    output: { sourceCount: sources.length, sources },
+  });
+
   log('航线 ' + FROM + ' ⇄ ' + TO + '　' + windowNote);
   log('预计消耗 ' + (BOTH ? 2 : 1) + ' 积分（按唯一 O-D 对计费；命中缓存则为 0）');
   if (CACHE.mode === 'off') log('缓存已关闭（--no-cache）');
   else if (CACHE.mode === 'refresh') log('强制重查（--refresh），结果将覆盖缓存');
   log('');
 
-  const { flights, meta } = await queryFlights({ sources, perTransfer, chunk, log, cache: CACHE });
+  const { flights, meta } = await queryFlights({ sources, perTransfer, chunk, log, cache: CACHE, journal: run });
 
   // 按日期归属方向：去程日期归 out，其余归 ret
   const outSet = new Set(outDates);
@@ -201,23 +216,39 @@ const BOTH = hasFlag('both') || Boolean(WEEKEND);
 
   // ── 输出 ──
   const payload = BOTH ? { out, ret } : out;
+  run.step('result', {
+    output: {
+      out: out.length, ret: ret.length, deduped: flights.length,
+      credits: meta.credits, truncated: meta.truncated, cache: meta.cache,
+    },
+  });
+
   if (hasFlag('raw')) {
     console.log(JSON.stringify(meta, null, 2));
+    const p = run.done({ mode: 'raw', counts: { out: out.length, ret: ret.length } });
+    if (p && !hasFlag('quiet')) console.error('\n运行记录 ' + p);
     return;
   }
   const json = JSON.stringify(payload, null, 1);
-  if (getArg('out')) {
-    fs.writeFileSync(getArg('out'), json, 'utf8');
+  const outFile = getArg('out');
+  if (outFile) {
+    fs.writeFileSync(outFile, json, 'utf8');
     log('');
-    log('\u2713 ' + (BOTH ? `去程 ${out.length} 条 + 返程 ${ret.length} 条` : out.length + ' 条') + ' → ' + getArg('out'));
+    log('\u2713 ' + (BOTH ? `去程 ${out.length} 条 + 返程 ${ret.length} 条` : out.length + ' 条') + ' → ' + outFile);
   } else {
     process.stdout.write(json + '\n');
   }
+  const rec = run.done({ out: outFile || '', counts: { out: out.length, ret: ret.length }, credits: meta.credits });
+  if (rec && !hasFlag('quiet')) log('运行记录 ' + rec);
+
   if (!out.length && !ret.length) {
     console.error('\u2716 没有查到航班。检查三字码是否为城市码，或换 --chunk / --per-transfer 重试。');
     process.exit(2);
   }
 })().catch((e) => {
+  // 先把中间态落盘再退出，否则上层只剩一句错误消息，没法判断断在哪一步
+  const note = journal.reportFailure(run, e, { cacheMode: CACHE.mode });
+  if (note) console.error(note);
   if (e instanceof VariflightError) die(e.message, e.hint);
   die(e.message);
 });

@@ -28,6 +28,7 @@ const fs = require('fs');
 const { requireKey, textWidth, padEnd } = require('./keys');
 const { routeInfo } = require('./amap');
 const { queryFlights, token } = require('./variflight');
+const journal = require('./journal');
 
 function die(msg, hint) {
   console.error('\u2716 ' + msg + (hint ? '\n  ' + hint : ''));
@@ -92,7 +93,14 @@ const hhmm = (min) => {
 };
 const durText = (min) => (min >= 60 ? Math.floor(min / 60) + 'h' + String(min % 60).padStart(2, '0') : min + 'm');
 
+// 运行记录：即使后面抛错，catch 里也能拿到它写快照
+const run = journal.begin('airport_scan.js', args, { enabled: !args.includes('--no-journal') });
+
 (async () => {
+  run.step('request', {
+    input: { RESORT, FROM, DATE, TYPE, CANDIDATES, BUFFER_PCT, BUFFER_MIN, cache: CACHE.mode },
+  });
+
   const rows = [];
 
   for (const c of CANDIDATES) {
@@ -133,6 +141,7 @@ const durText = (min) => (min >= 60 ? Math.floor(min / 60) + 'h' + String(min % 
           perTransfer: TYPE === 'direct' ? 0 : 20,
           chunk: 3,
           cache: CACHE,
+          journal: run,
           log: () => {},
         });
         const flights = TYPE === 'direct' ? all.filter((f) => f.seg === 1)
@@ -174,6 +183,15 @@ const durText = (min) => (min >= 60 ? Math.floor(min / 60) + 'h' + String(min % 
     }
 
     rows.push(row);
+    run.step('airport', {
+      input: { airport: c.airport, city: c.city, to: FROM ? c.city || c.airport : null },
+      output: {
+        driveMin: row.driveMin, toResortMinutes: row.toResortMinutes,
+        flightCount: row.flightCount,
+        cheapest: row.cheapest ? row.cheapest.price : null,
+        error: row.error || null,
+      },
+    });
     console.error('  \u2713 ' + c.airport + (row.toResortMinutes == null ? '' : ' 车程 ' + durText(row.toResortMinutes))
       + (row.cheapest ? ' 最低 ¥' + row.cheapest.price : ''));
   }
@@ -217,4 +235,10 @@ const durText = (min) => (min >= 60 ? Math.floor(min / 60) + 'h' + String(min % 
   } else {
     process.stdout.write(json + '\n');
   }
-})().catch((e) => die(e.message, e.hint));
+  const rec = run.done({ out: getArg('out') || '', counts: { airports: rows.length } });
+  if (rec) console.error('运行记录 ' + rec);
+})().catch((e) => {
+  const note = journal.reportFailure(run, e, { cacheMode: CACHE.mode });
+  if (note) console.error(note);
+  die(e.message, e.hint);
+});

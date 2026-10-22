@@ -1,20 +1,35 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * doctor.js — 检查三个外部服务的凭据状态
+ * doctor.js — 检查外部服务的凭据状态与连通性
  *
  * 用法：
- *   node scripts/doctor.js            只检查环境变量是否设置
- *   node scripts/doctor.js --probe    各发一次真实请求，验证可用性
- *   node scripts/doctor.js --json     输出机器可读结果
+ *   node scripts/doctor.js               只检查环境变量 / mcp.json 是否配置（零成本）
+ *   node scripts/doctor.js --probe       加发**零成本**真实请求验证可用性
+ *   node scripts/doctor.js --probe-wendao  额外探活问道（消耗 1 次日配额，20–60 秒）
+ *   node scripts/doctor.js --probe-all     等价于 --probe --probe-wendao
+ *   node scripts/doctor.js --manual      用户拒绝配置任何 key：输出手动录入清单，退出码 0
+ *   node scripts/doctor.js --json        机器可读结果
  *
- * 退出码：必需凭据（VARIFLIGHT_MCP_KEY）可用为 0，否则为 1。
- * 高德与问道凭据缺失或不可用不改变退出码，按各自的降级路径继续。
+ * 检测成本（重要）：
+ *   飞常准 MCP  initialize + tools/list 不扣积分 → 完全免费
+ *   高德        1 次地理编码，在免费额度内 → 不计费
+ *   携程问道    1 次真实查询，扣 1 次日配额且要等 20–60 秒 → 默认不探活
+ *
+ * 退出码：
+ *   0  必选凭据可用，或已显式声明走手动模式（--manual）
+ *   1  必选凭据缺失或不可用（仍可改走 --manual，不是死路）
  */
 
-const { SPECS, status, statusLine, guide, detectWendaoError, padEnd } = require('./keys');
+const { SPECS, ROLES, ORDER, status, statusLine, guide, manualGuide, detectWendaoError, padEnd } = require('./keys');
 const { rpc, openSession, token, VariflightError } = require('./variflight');
 const cache = require('./cache');
+
+const args = process.argv.slice(2);
+const has = (f) => args.includes('--' + f);
+
+const AMAP_GEOCODE = 'https://restapi.amap.com/v3/geocode/geo';
+const WENDAO_ENDPOINT = 'https://externalcallback.ctrip.com/skills/api/crew/skillhub/searchInfo';
 
 /** 缓存目录与条目数：让用户知道「为什么这次没扣分」或「旧数据存在哪」 */
 function cacheStatus() {
@@ -22,12 +37,6 @@ function cacheStatus() {
   if (!dir) return { dir: '', entries: 0 };
   return { dir, entries: cache.list().length };
 }
-
-const args = process.argv.slice(2);
-const has = (f) => args.includes('--' + f);
-
-const AMAP_GEOCODE = 'https://restapi.amap.com/v3/geocode/geo';
-const WENDAO_ENDPOINT = 'https://externalcallback.ctrip.com/skills/api/crew/skillhub/searchInfo';
 
 const INFOCODE = {
   10001: 'key 不正确或已过期',
@@ -53,8 +62,8 @@ async function probeAmap(key) {
   }
 }
 
-async function probeWendao(token) {
-  const body = { inputs: { token, query: '查询明天北京到上海的直飞航班，列出航班号和票价' } };
+async function probeWendao(tok) {
+  const body = { inputs: { token: tok, query: '查询明天北京到上海的直飞航班，列出航班号和票价' } };
   try {
     const res = await fetch(WENDAO_ENDPOINT, {
       method: 'POST',
@@ -91,16 +100,51 @@ async function probeVariflight() {
     if (e instanceof VariflightError) {
       return { ok: false, detail: e.message, kind: e.kind };
     }
-    return { ok: false, detail: '网络请求失败：' + e.message };
+    return { ok: false, detail: '探活失败：' + e.message };
   }
 }
 
 const PROBES = { AMAP_API_KEY: probeAmap, WENDAO_API_KEY: probeWendao, VARIFLIGHT_MCP_KEY: probeVariflight };
 
+// ── 手动模式 ────────────────────────────────────────────────────────────
+if (has('manual')) {
+  const manual = {
+    mode: 'manual',
+    ok: true,
+    reason: '用户选择不配置任何 key，改用手动录入航班',
+    checklist: [
+      '航班：出发地、到达地、日期、航班号、起飞时刻、落地时刻（跨日注明）、票面价',
+      '中转：中转城市、停留分钟数（可用 stops 或直接写 tag）',
+      '车程：每个候选机场到雪场的单程分钟数（含预留）',
+      '雪场：日场起止、夜场起止与休息日、雪季',
+      '住宿：雪场每晚、转机城市每晚',
+      '请假口径：上班 / 半天分界 / 下班三个时刻',
+    ],
+    next: 'node scripts/planner.js config.json',
+    doc: 'references/manual-flights.md',
+  };
+  if (has('json')) {
+    console.log(JSON.stringify(manual, null, 2));
+    process.exit(0);
+  }
+  console.log('手动录入模式');
+  console.log('─'.repeat(60));
+  console.log('不配置任何 key 也能把行程算出来，只是没有自动比价。');
+  console.log('需要向用户收集：');
+  for (const c of manual.checklist) console.log('  · ' + c);
+  console.log('');
+  console.log('然后：' + manual.next);
+  console.log('字段与示例：' + manual.doc);
+  process.exit(0);
+}
+
+// ── 常规检查 ────────────────────────────────────────────────────────────
 async function main() {
-  const names = ['VARIFLIGHT_MCP_KEY', 'AMAP_API_KEY', 'WENDAO_API_KEY'];
+  const doProbe = has('probe') || has('probe-all') || has('probe-wendao');
+  const probeWendaoToo = has('probe-wendao') || has('probe-all');
+
   const rows = [];
-  for (const name of names) {
+  for (const name of ORDER) {
     const st = status(name);
     // 飞常准 key 允许来自 ~/.workbuddy-ai/mcp.json，status() 只看环境变量，这里补上
     if (name === 'VARIFLIGHT_MCP_KEY') {
@@ -108,65 +152,93 @@ async function main() {
       st.set = Boolean(k);
       st.length = k.length;
     }
-    const row = { env: name, set: st.set, length: st.length, required: st.spec.required, service: st.spec.service, usage: st.spec.usage };
-    if (st.set && has('probe')) {
-      const r = await PROBES[name](process.env[name] ? process.env[name].trim() : '');
-      row.probe = r;
+    const row = {
+      env: name, set: st.set, length: st.length,
+      role: st.spec.role, roleLabel: ROLES[st.spec.role],
+      service: st.spec.service, usage: st.spec.usage,
+      probeCost: st.spec.probeCost,
+      applyUrl: st.spec.applyUrl,
+    };
+
+    const shouldProbe = doProbe && st.set && (name !== 'WENDAO_API_KEY' || probeWendaoToo);
+    if (shouldProbe) {
+      row.probe = await PROBES[name](process.env[name] ? process.env[name].trim() : '');
+    } else if (doProbe && st.set && name === 'WENDAO_API_KEY') {
+      row.probe = { skipped: true, detail: '默认不探活（会消耗 1 次日配额），需要时加 --probe-wendao' };
     }
     rows.push(row);
   }
 
-  const requiredOk = rows.filter((r) => r.required).every((r) => r.set && (!r.probe || r.probe.ok));
-  const amapRow = rows.find((r) => r.env === 'AMAP_API_KEY');
-  const amapOk = amapRow.set && (!amapRow.probe || amapRow.probe.ok);
+  const requiredRows = rows.filter((r) => r.role === 'required');
+  const requiredOk = requiredRows.every((r) => r.set && (!r.probe || r.probe.ok));
+  const fallbackRow = rows.find((r) => r.role === 'fallback');
+  const fallbackOk = !fallbackRow || !fallbackRow.set || !fallbackRow.probe || fallbackRow.probe.ok;
+  const optionalOk = rows.filter((r) => r.role === 'optional').every((r) => !r.set || !r.probe || r.probe.ok);
+
+  const cs = cacheStatus();
 
   if (has('json')) {
-    console.log(JSON.stringify({ ok: requiredOk, keys: rows, cache: cacheStatus() }, null, 2));
+    console.log(JSON.stringify({
+      ok: requiredOk,
+      canRunAutomatically: requiredOk,
+      manualModeAvailable: true,
+      mode: requiredOk ? 'auto' : 'manual',
+      keys: rows,
+      cache: cs,
+    }, null, 2));
     process.exit(requiredOk ? 0 : 1);
   }
 
-  console.log('凭据检查' + (has('probe') ? '（含真实请求验证）' : ''));
+  console.log('凭据检查' + (doProbe ? '（含真实请求验证）' : '（零成本，未发请求）'));
   console.log('─'.repeat(60));
   for (const r of rows) {
     console.log(statusLine({ env: r.env, spec: SPECS[r.env], set: r.set, length: r.length }));
     if (r.probe) {
-      console.log(' '.repeat(20) + (r.probe.ok ? '✔ ' : '✖ ') + r.probe.detail);
+      const mark = r.probe.skipped ? '· ' : r.probe.ok ? '✔ ' : '✖ ';
+      console.log(' '.repeat(20) + mark + r.probe.detail);
     }
   }
-  const cs = cacheStatus();
   console.log(padEnd('缓存', 20) + (cs.dir ? cs.entries + ' 条 · ' + cs.dir : '不可写，已关闭'));
   console.log('');
 
   if (!requiredOk) {
-    const bad = rows.find((r) => r.required && !(r.set && (!r.probe || r.probe.ok)));
+    const bad = requiredRows.find((r) => !(r.set && (!r.probe || r.probe.ok)));
     const p = bad.probe;
     let reason;
     let tail;
     if (bad.set && p && p.kind === 'quota') {
       reason = `${bad.env} 有效，但${p.detail}`;
-      tail = '配额恢复后重跑原命令；或按步骤 2 换用另一个 token。';
+      tail = '配额恢复后重跑原命令；或按步骤 2 换一个 key；也可以直接走手动录入（node scripts/doctor.js --manual）。';
     } else if (bad.set) {
       reason = `环境变量 ${bad.env} 已设置但不可用（${p ? p.detail : '未通过验证'}）`;
-      tail = '按步骤 2 重新设置后，在同一终端会话内重跑原命令。';
+      tail = '按步骤 2 重新设置后，在同一终端会话内重跑原命令；也可以直接走手动录入（node scripts/doctor.js --manual）。';
     }
     console.error(guide(bad.env, { reason, tail }));
+    console.error('');
+    console.error(manualGuide('必选凭据 ' + bad.env + ' 不可用'));
     process.exit(1);
   }
 
-  if (!amapOk) {
-    if (!amapRow.set) {
-      console.log('→ 高德凭据未设置，可按下面的引导配置；或向用户询问单程车程分钟数继续。');
-      console.error(guide('AMAP_API_KEY'));
-    } else {
-      console.log('→ 高德凭据不可用，可按下面的引导重新配置；或向用户询问单程车程分钟数继续。');
-      console.error(guide('AMAP_API_KEY', {
-        reason: '环境变量 AMAP_API_KEY 已设置但不可用（' + (amapRow.probe ? amapRow.probe.detail : '未通过验证') + '）',
-      }));
-    }
+  // 必选没问题，再看兜底与可选
+  if (!fallbackOk) {
+    console.log('→ 高德凭据不可用（兜底项）：仅在问道给不出车程、或需要精确值时才会用到，可先跳过。');
+    console.error(guide('AMAP_API_KEY', {
+      reason: '环境变量 AMAP_API_KEY 已设置但不可用（' + (fallbackRow.probe ? fallbackRow.probe.detail : '未通过验证') + '）',
+    }));
     process.exit(0);
   }
 
-  console.log('→ 主凭据（飞常准 MCP）与高德均可用，进入流程。');
+  if (!optionalOk) {
+    const w = rows.find((r) => r.role === 'optional');
+    console.log('→ 问道凭据不可用（可选项）：跳过机场对比，直接把候选机场列给用户选即可继续。');
+    console.error(guide('WENDAO_API_KEY', {
+      reason: '环境变量 WENDAO_API_KEY 已设置但不可用（' + (w.probe ? w.probe.detail : '未通过验证') + '）',
+    }));
+    process.exit(0);
+  }
+
+  const missing = rows.filter((r) => !r.set).map((r) => r.roleLabel + ' ' + r.env);
+  console.log('→ 必选凭据可用，进入流程。' + (missing.length ? '未配置：' + missing.join('、') + '（按各自降级路径继续）' : ''));
   process.exit(0);
 }
 
