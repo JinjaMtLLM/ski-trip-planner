@@ -223,7 +223,7 @@ SQL 结果按日期排序，200 行上限只会砍掉**靠后**的日期：最�
 
 **这一版把「挑候选」从人工改成图枚举。** 老流程有一步是人看着票价表往 `config.json` 里挑几十条航班，漏斗就从那里收窄——单边按价格排序会系统性漏掉「略贵但时间好很多」的班次，同一航班号的不同中转时长也容易搞混。图枚举没有这一步。
 
-先把路径表建出来（航班来自飞常准缓存，高铁与打车来自案例目录里的 `network.json`，由 `case.json` 的 `networkFile` 指定）：
+先把路径表建出来（航班来自飞常准缓存，高铁与打车来自案例目录里的 `network.json`，由 `case.json` 的 `networkFile` 指定；高铁时刻怎么采见「高铁时刻采集（12306）」一节）：
 
 ```bash
 node scripts/legs.js case.json --out legs.csv
@@ -282,6 +282,61 @@ node scripts/planner.js config.json --csv
 | 档位 | 组合里实际出现的天数全部成档 | 写了 `leaveBuckets` 就只留那几档，不写才自动分档 |
 
 住宿已经不是两套账（`planner.js` 的「总晚数减法 + 红眼豁免」已删除）。剩下的差异只在「跨夜的连接航班」这一种情形：主流程逐段采样能判准，`planner.js` 只能按停留时长估。**对外以 `enumerate.js` 为准**，`planner.js` 保留是为了没有缓存、只能手填几条航班时也能出结果。汇报格式：各档最优解对照表 + 3–5 条可直接执行的判断，不复述整张表。
+
+## 高铁时刻采集（12306）
+
+**什么时候需要**：路径表里要放高铁边（`network.json#rail`）时才用。案例全靠飞机 + 打车就跳过这一节。
+
+**为什么单独讲**：12306 没有公开 API，三个可用接口的限制完全不同，用错就是封 IP。
+
+| 接口 | 用途 | 限流 |
+|---|---|---|
+| `otn/leftTicket/queryG` | 某天某区间的有票车次 | **会封**。连发几条就 302 到 `error.html`，按 IP + CDN 节点封 20–40 分钟，**换 cookie 不解封** |
+| `search.12306.cn/search/v1/train/search` | 车次号 → `train_no` | 不限流 |
+| `otn/czxx/queryByTrainNo` | 逐站时刻 | 不限流 |
+
+### 1 QPS 是硬约束
+
+`scripts/rail_12306.js` 默认 `qps = 1`（相邻请求的**发起**间隔 ≥ 1000ms），站码表、会话初始化、车次查询、逐站查询全部过同一个节流阀，没有哪条能绕过。
+
+不要为了快把 `--qps` 调大：实测 8 条连发（间隔 400ms）当场就封，之后 20 分钟内单条能过、再连发又封。
+
+### 两条容易踩的坑
+
+1. **被封时可能是 HTTP 200 + HTML，不是 4xx。** 302 指向错误页，客户端一旦自动跟随，最终拿到的是 200 和一段 HTML。所以必须判 body 是否以 `{` 开头——只看状态码会误判成解析 bug，然后反复重试，越试封得越久。脚本里 `redirect: 'manual'` 加 body 判断两条都做了。
+2. **返回空 body ≠ 被封。** 超出 **15 天预售期**时接口就是返回空。要取远期时刻表，用预售期内**同星期几**的日期外推（比如要查周五，就查两周后的那个周五）。
+
+### 推荐流程：第三方出车次，12306 校验时刻
+
+问道（提示词 1 的同一次调用或单独一问）能给出车次号和大概时刻，但车次号偶发出错。用 `--verify` 逐条落到 12306 的逐站数据上——它只走两个不限流接口，可以放心跑：
+
+```bash
+node scripts/rail_12306.js --verify G7831,G7833,G7835 --from 清河 --to 太子城 --date 2026-11-06
+```
+
+一天几十班的干线，先用 `--list` 拿全量车次（走 leftTicket，已过 1 QPS 节流 + 指数退避重试，用尽抛 `blocked`）：
+
+```bash
+node scripts/rail_12306.js --list 呼和浩特东 张家口 2026-11-06
+node scripts/rail_12306.js --stops G7831 2026-11-06        # 全列停站
+node scripts/rail_12306.js --codes 清河 太子城 北京北        # 站名 → 电报码
+```
+
+站码表会落盘到缓存目录（`rail-stations.json`），只拉一次。
+
+### 写进路径表
+
+结果转成 `network.json#rail` 的条目：`dep` / `arr` 写 `HH:MM`，`cost` 填二等座票价，`note` 里带历时。
+
+三条约定：
+
+- **双向都要写**。只写去程的话返程无路可走，组合会被静默丢掉。
+- **只停一侧的列车不要勉强塞进来**。比如 G7838（太子城 21:11 → 北京北 22:27）不经清河，就不能当作「太子城→清河」的边，否则算出来的接续时间是假的。
+- **区间要按实际停站拆**。张家口→太子城没有直达（要在下花园北换乘），这种要么建换乘节点，要么改用公路接驳并在 `notes` 里说明，别写成一条不存在的直达边。
+
+### 已知缺口
+
+预售期 15 天意味着雪季的日期现在查不到票，只能拿同星期几的时刻表外推；雪季加开的临客（如 D9261–D9270）不会出现在常规时刻表里。**出行前必须在 12306 复核**，报告里也要写这句。
 
 ## 计算口径
 
@@ -382,7 +437,7 @@ $env:VARIFLIGHT_MCP_KEY = [Environment]::GetEnvironmentVariable('VARIFLIGHT_MCP_
 | 依赖 | 说明 |
 |---|---|
 | Node.js ≥ 18 | 脚本使用内置 `fetch`，无 npm 依赖 |
-| 网络 | `c-gw.variflight.com`、`restapi.amap.com`、`externalcallback.ctrip.com` 可达 |
+| 网络 | `c-gw.variflight.com`、`restapi.amap.com`、`externalcallback.ctrip.com` 可达；采集高铁时刻还需要 `kyfw.12306.cn` 与 `search.12306.cn`（**注意 1 QPS 限制**，见「高铁时刻采集」） |
 | 可写目录 | `<技能根>/.cache/`（可用 `SKI_CACHE_DIR` 改）。不可写时缓存与运行记录自动降级为关闭，脚本照常跑 |
 
 ## 文件说明
@@ -401,6 +456,7 @@ $env:VARIFLIGHT_MCP_KEY = [Environment]::GetEnvironmentVariable('VARIFLIGHT_MCP_
 | `scripts/mcp_config.js` | 一条命令把飞常准 MCP 合并写进 agent 的 MCP 配置（路径见 `scripts/mcp_json.js`），带备份与 `--check` / `--print` / `--remove` |
 | `scripts/mcp_json.js` | MCP 配置文件的路径解析：`SKI_MCP_CONFIG` → `~/.workbuddy/mcp.json` → `~/.workbuddy-ai/mcp.json`，读写共用 |
 | `scripts/amap_route.js` | 高德驾车用时查询，输出含预留的 `toResortMinutes`。兜底用，不是主路径 |
+| `scripts/rail_12306.js` | **12306 高铁时刻查询**：默认 1 QPS 节流，识别限流（302 到错误页，或跟随跳转后的 200 + HTML），预售期外直接拒绝。`--list` 有票查询、`--verify` 按逐站时刻校验车次、`--stops` 打印全列停站 |
 | `scripts/wendao.js` | 携程问道的请求与解析实现，供需要编程调用的场景使用。主流程不经过它，粗筛直接按 `references/wendao-prompts.md` 发原始请求 |
 | `scripts/amap.js` | 地理编码与驾车路径规划实现，被上面两个路线脚本共用 |
 | `scripts/keys.js` | 凭据登记表（三档 role）与缺 key 引导文案，所有脚本共用 |

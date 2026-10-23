@@ -704,6 +704,92 @@ function fakeCall(truncatedOnFirstCall) {
     assert.strictEqual(f.price, 641, 'price 仍是裸票价');
   });
 
+  // ---- 12306 客户端：节流与限流识别（全部离线，用假 fetch） ----
+  const RL = require(path.join(ROOT, 'scripts', 'rail_12306'));
+
+  /** 相对今天的日期，落在预售期内 */
+  function futureDate(days) {
+    return new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
+  }
+
+  /** 假 fetch：记录每次调用的时间戳，按队列返回预置响应 */
+  function fakeRail(responses) {
+    const at = [];
+    let i = 0;
+    const impl = async () => {
+      at.push(Date.now());
+      const r = responses[Math.min(i, responses.length - 1)];
+      i += 1;
+      return {
+        status: r.status,
+        headers: {
+          get: () => r.location || null,
+          getSetCookie: () => r.cookies || [],
+        },
+        text: async () => r.body,
+      };
+    };
+    impl.at = at;
+    return impl;
+  }
+
+  await (async () => {
+    // qps=20 → 50ms 间隔，测试跑得快；真实默认是 1 → 1000ms
+    const fetchImpl = fakeRail([{ status: 200, body: '{"data":{"result":[]}}' }]);
+    const c = RL.createClient({ qps: 20, fetchImpl });
+    await c.listTrains('QIP', 'IZP', futureDate(1));
+    await c.listTrains('QIP', 'IZP', futureDate(1));
+    await c.listTrains('QIP', 'IZP', futureDate(1));
+    const gaps = fetchImpl.at.slice(1).map((t, k) => t - fetchImpl.at[k]);
+    check('1 QPS 节流：相邻请求间隔不小于 1/qps 秒', () => {
+      assert.strictEqual(c.minIntervalMs, 50, 'qps=20 应为 50ms，实际 ' + c.minIntervalMs);
+      assert.ok(fetchImpl.at.length >= 3, '应至少发出 3 次请求，实际 ' + fetchImpl.at.length);
+      // 允许 5ms 的定时器误差
+      const tight = gaps.filter((g) => g < 45);
+      assert.strictEqual(tight.length, 0, '有 ' + tight.length + ' 个间隔过短：' + gaps.join(','));
+    });
+  })();
+
+  await (async () => {
+    const fetchImpl = fakeRail([{ status: 302, location: 'https://www.12306.cn/mormhweb/logFiles/error.html' }]);
+    const c = RL.createClient({ qps: 50, fetchImpl, retries: 1, backoffMs: 5 });
+    let err = null;
+    try { await c.listTrains('QIP', 'IZP', futureDate(1)); } catch (e) { err = e; }
+    check('302 到 error.html 识别为限流，退避重试后抛 blocked', () => {
+      assert.ok(err, '应抛错');
+      assert.strictEqual(err.kind, 'blocked', '错误类型应为 blocked，实际 ' + err.kind);
+      assert.strictEqual(fetchImpl.at.length, 3, '应 1 次 init + 2 次查询尝试，实际 ' + fetchImpl.at.length);
+    });
+  })();
+
+  await (async () => {
+    // 被限流时若客户端跟随了 302，拿到的是 200 + HTML —— 必须同样按限流处理
+    const fetchImpl = fakeRail([{ status: 200, body: '<!DOCTYPE html><html>error</html>' }]);
+    const c = RL.createClient({ qps: 50, fetchImpl, retries: 0, backoffMs: 5 });
+    let err = null;
+    try { await c.listTrains('QIP', 'IZP', futureDate(1)); } catch (e) { err = e; }
+    check('200 + HTML 正文也判定为限流，而不是当解析错误', () => {
+      assert.ok(err, '应抛错');
+      assert.strictEqual(err.kind, 'blocked', '错误类型应为 blocked，实际 ' + err.kind);
+    });
+  })();
+
+  await (async () => {
+    const far = RL.presaleInfo('2026-12-04', new Date('2026-10-23T00:00:00+08:00'));
+    const near = RL.presaleInfo('2026-11-06', new Date('2026-10-23T00:00:00+08:00'));
+    let err = null;
+    try {
+      await RL.createClient({ qps: 50, fetchImpl: fakeRail([{ status: 200, body: '{}' }]) })
+        .listTrains('QIP', 'IZP', '2026-12-04');
+    } catch (e) { err = e; }
+    check('预售期外直接拒绝，不去发那个注定返回空的请求', () => {
+      assert.strictEqual(far.open, false, '41 天后应在预售期外');
+      assert.strictEqual(near.open, true, '14 天后应在预售期内');
+      assert.ok(err, '应抛错');
+      assert.strictEqual(err.kind, 'presale', '错误类型应为 presale，实际 ' + err.kind);
+    });
+  })();
+
   check('地面段的车种标签：特急 / 电车 / 新干线 + 里程（双向都要带）', () => {
     const dir = path.join(TMP, 'label');
     fs.mkdirSync(dir, { recursive: true });

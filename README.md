@@ -167,6 +167,7 @@ Disable with `--no-journal` or `SKI_NO_JOURNAL=1`.
 | `scripts/mcp_config.js` | One-command MCP setup: merges `variflight-mcp` into the agent's MCP config with backup, `--check`, `--print`, `--remove` |
 | `scripts/mcp_json.js` | Locates that config file — `SKI_MCP_CONFIG`, then the common per-agent paths — and reads/writes one shared resolution |
 | `scripts/amap_route.js` | Amap driving time, outputs `toResortMinutes` including the buffer |
+| `scripts/rail_12306.js` | 12306 rail timetable client: 1 QPS throttle, block detection (302 → error page, or 200 + HTML), 15-day presale guard. `--list` for availability, `--verify` to check train numbers against stop-by-stop times, `--stops` for a full schedule |
 | `scripts/wendao.js` | Ctrip Wendao request/parse implementation for programmatic use; not on the main path |
 | `scripts/amap.js` | Geocoding and driving route implementation, shared by the route scripts |
 | `scripts/keys.js` | Credential registry and the shared missing-key guide |
