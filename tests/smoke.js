@@ -426,6 +426,38 @@ check('hover 明细里的打车段标出里程（结构化 km 与备注兜底都
   assert.ok(taxi.some((r) => r[2] === '\u6253\u8f66 48.5km'), '里程数值不对：' + JSON.stringify(taxi.slice(0, 3)));
 });
 
+check('雪时 hover 摊开成逐日逐场时段，加权合计与单元格里的一致', () => {
+  const html = fs.readFileSync(path.join(E2E, 'report.html'), 'utf8');
+  const tips = JSON.parse(/var TIPS=(\[[\s\S]*?\]);/.exec(html)[1]);
+  const snow = tips.filter((t) => t.k === 'snow');
+  assert.ok(snow.length > 0, '页面里没有雪时 tooltip');
+  for (const t of snow) {
+    const rows = t.rows || [];
+    assert.ok(rows.length >= 2, '雪时明细至少要有 1 天 + 合计行');
+    const sum = rows[rows.length - 1];
+    assert.strictEqual(sum[3], 'sum', '末行应为合计行：' + JSON.stringify(sum));
+    const per = rows.slice(0, -1).reduce((a, r) => a + parseFloat(r[2]), 0);
+    assert.ok(Math.abs(per - parseFloat(sum[2])) <= 0.4, '逐日小时合计与总雪时对不上：' + per + ' vs ' + sum[2]);
+    for (const r of rows.slice(0, -1)) {
+      assert.ok(/^\d{1,2}\/\d{1,2} 周[一二三四五六日]$/.test(r[0]), '日期列格式不对：' + r[0]);
+      const seg = '\\d{2}:\\d{2}-\\d{2}:\\d{2}( 夜)?';
+      assert.ok(new RegExp('^' + seg + '( · ' + seg + ')?$').test(r[1]), '时段列格式不对：' + r[1]);
+    }
+  }
+});
+
+check('逐日时段与雪时同源：加权利求和等于 snowHours', () => {
+  const R = { dayOpen: '08:30', dayClose: '16:30', nightOpen: '18:30', nightClose: '21:30', nightWeight: 0.5 };
+  const from = at('2026-11-27', 13, 24), to = at('2026-11-30', 18, 23);
+  let day = 0, night = 0;
+  for (const dw of G.snowWindows(from, to, R)) {
+    for (const [a, b, kind] of dw.segs) { if (kind === 'day') day += b - a; else night += b - a; }
+  }
+  assert.deepStrictEqual(G.snowHours(from, to, R), { hDay: day / 60, hNight: night / 60, hEff: day / 60 + (night / 60) * 0.5 });
+  // 没有交集的日子不该出现在明细里
+  assert.strictEqual(G.snowWindows(to, to, R).length, 0, '零交集应返回空数组');
+});
+
 // ── 5. 积分口径：合并日期才是省分手段 ─────────────────────────────────
 console.log('\n积分口径');
 

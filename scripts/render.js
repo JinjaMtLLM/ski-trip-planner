@@ -13,6 +13,7 @@
 const fs = require('fs');
 const path = require('path');
 const L = require('./legs');
+const G = require('./graphcore');
 
 const WD = ['日', '一', '二', '三', '四', '五', '六'];
 const dayOf = (a) => Math.floor(a / 1440);
@@ -39,6 +40,7 @@ const legsFile = get('legs', path.join(path.dirname(path.resolve(cfgPath)), 'leg
 const topData = JSON.parse(fs.readFileSync(topFile, 'utf8'));
 const legs = JSON.parse(fs.readFileSync(legsFile, 'utf8'));
 const net = L.loadNetwork(cfg.networkFile, cfg.resort, path.dirname(path.resolve(cfgPath)));
+const RES = cfg.params.resort;
 
 const outFile = get('out', path.join(path.dirname(path.resolve(cfgPath)), 'report.html'));
 
@@ -131,6 +133,28 @@ function costRows(it) {
 }
 function costKey(it) { return pushTip({ k: 'cost', rows: costRows(it) }); }
 
+/**
+ * 雪时明细：把「26.12 小时」摊成逐日逐场的真实滑行时段。
+ * 时段由 graphcore.snowWindows 算，和枚举时的雪时口径是同一份代码，不会两边对不上。
+ */
+function snowRows(it) {
+  const days = G.snowWindows(it.arriveResort, it.leaveResort, RES);
+  const nightW = RES.nightWeight == null ? 0.5 : RES.nightWeight;
+  const rows = days.map((dw) => {
+    let min = 0;
+    const spans = dw.segs.map(([a, b, kind]) => {
+      min += (b - a) * (kind === 'night' ? nightW : 1);
+      return hm(a) + '-' + hm(b) + (kind === 'night' ? ' 夜' : '');
+    });
+    // md/wd 收的是绝对分钟，dw.day 是天号，要乘回分钟
+    return [md(dw.day * 1440) + ' ' + wd(dw.day * 1440), spans.join(' \u00b7 '), (Math.round(min / 6) / 10) + 'h'];
+  });
+  // 末行把口径写明：夜场折半后的「有效雪时」不等于表里各段时长之和
+  rows.push(['合计　日场 ' + it.hDay + 'h + 夜场 ' + it.hNight + 'h × ' + nightW, '', it.hEff + 'h', 'sum']);
+  return rows;
+}
+function snowKey(it) { return pushTip({ k: 'snow', rows: snowRows(it) }); }
+
 const ICON = { flight: '\u2708', rail: '\u{1F69D}', taxi: '\u{1F695}', shuttle: '\u{1F68C}' };
 const GROUND = { taxi: 1, shuttle: 1 };
 
@@ -192,7 +216,9 @@ function championCard(it, label, sub) {
   return '<div class="card">'
     + '<div class="ct">' + badge(label) + '<span class="cr">' + sub + '</span></div>'
     + '<div class="cp">¥' + it.perDay + '<span class="cu">/雪日</span></div>'
-    + '<div class="cl" data-tipkey="' + costKey(it) + '">雪时 <b>' + it.hEff + '</b> 小时　总花费 ¥' + it.total + '</div>'
+    // 同一行两个 hover：雪时弹出逐日滑行表，总花费弹出费用构成
+    + '<div class="cl"><span data-tipkey="' + snowKey(it) + '">雪时 <b>' + it.hEff + '</b> 小时</span>'
+    + '<span data-tipkey="' + costKey(it) + '">总花费 \uffe5' + it.total + '</span></div>'
     // 档位多时卡片会变窄，起止时刻分两行写，避免「回深 / 圳」被折断
     + '<div class="cm"><span>' + md(it.outFirst) + ' ' + hm(it.outFirst) + ' 出发</span>'
     + '<span>' + md(it.backHome) + ' ' + hm(it.backHome) + ' 回到' + nodeName(cfg.origin) + '</span></div>'
@@ -223,7 +249,8 @@ function table(list) {
       + dateCell(it.leaveResort, '离场')
       + routeBlock(it, 'ret', 'td', 'rt')
       + dateCell(it.backHome, '到达')
-      + '<td class="num"><b>' + it.hEff + '</b><br><span class="dim">日' + it.hDay + ' 夜' + it.hNight + '</span></td>'
+      + '<td class="num hcell" data-tipkey="' + snowKey(it) + '"><b>' + it.hEff + '</b>'
+      + '<br><span class="dim">日' + it.hDay + ' 夜' + it.hNight + '</span></td>'
       + '<td class="num lodgecell" data-tipkey="' + ck + '">¥' + it.lodge
       + '<br><span class="dim">雪场' + it.resortN + ' 中转' + it.hotelN + '</span></td>'
       + '<td class="num costcell" data-tipkey="' + ck + '">¥' + it.total
@@ -236,7 +263,6 @@ function table(list) {
 
 // ---------------------------------------------------------------- 组装
 const BUCKETS = topData.buckets;
-const RES = cfg.params.resort;
 const SESSION = (Number(RES.dayClose.slice(0, 2)) * 60 + Number(RES.dayClose.slice(3)) -
   (Number(RES.dayOpen.slice(0, 2)) * 60 + Number(RES.dayOpen.slice(3)))) / 60;
 
@@ -388,7 +414,8 @@ const html = '<!DOCTYPE html>\n<html lang="zh-CN"><head><meta charset="utf-8"><t
   + '.cp{font-size:27px;font-weight:700;letter-spacing:-.7px}'
   + '.cu{font-size:12px;font-weight:500;color:#6b7280;margin-left:2px}'
   + '.cl{font-size:12.5px;color:#3f4652;margin-top:3px;cursor:help}'
-  + '.cl:hover{color:#1d4ed8}'
+  + '.cl span{cursor:help}.cl span+span{margin-left:14px}'
+  + '.cl span:hover{color:#1d4ed8}'
   + '.cbar{display:flex;gap:14px;font-size:11.5px;color:#8b93a1;margin-top:8px;padding-top:8px;border-top:1px dashed #eceef1}'
   + '.croute{font-size:11px;margin-top:9px;line-height:1.7;cursor:help}'
   + '.cm{font-size:11px;color:#98a0ad;margin-top:9px;padding-top:8px;border-top:1px dashed #eceef1;line-height:1.6}'
@@ -425,6 +452,7 @@ const html = '<!DOCTYPE html>\n<html lang="zh-CN"><head><meta charset="utf-8"><t
   + 'font-size:11px;line-height:1.7;padding:10px 13px;opacity:0;transition:opacity .12s;'
   + 'box-shadow:0 10px 30px rgba(0,0,0,.28)}'
   + '#tip .tg{display:grid;grid-template-columns:auto auto auto auto auto;column-gap:14px;row-gap:1px}'
+  + '#tip .tg.snow{grid-template-columns:auto auto auto;column-gap:18px;row-gap:2px}'
   + '#tip .tg.cost{grid-template-columns:auto auto auto;column-gap:16px;row-gap:0}'
   + '#tip .tc.n{color:#9aa1ad}'
   + '#tip .rowline{grid-column:1/-1;display:flex;justify-content:space-between;'
@@ -500,8 +528,13 @@ const html = '<!DOCTYPE html>\n<html lang="zh-CN"><head><meta charset="utf-8"><t
   + 'function cell(cls,txt){var d=document.createElement("div");d.className="tc "+cls;d.textContent=txt||"";return d;}'
   + 'function fillTip(t){'
   + '  var g=document.createElement("div"),i;'
-  + '  if(t.k==="cost"){'
-  + '    g.className="tg cost";'
+  + '  if(t.k==="legs"){'
+  + '    g.className="tg";'
+  + '    (t.rows||[]).forEach(function(r){'
+  + '      var cls=["t","","m","c","x"];'
+  + '      for(i=0;i<5;i++) g.appendChild(cell(cls[i],r[i]));});'
+  + '  } else {'
+  + '    g.className="tg "+(t.k==="snow"?"snow":"cost");'
   + '    (t.rows||[]).forEach(function(r){'
   + '      var ex=r[3]||"";'
   + '      if(ex){'
@@ -510,13 +543,8 @@ const html = '<!DOCTYPE html>\n<html lang="zh-CN"><head><meta charset="utf-8"><t
   + '        var b=document.createElement("span");b.textContent=r[2];'
   + '        d.appendChild(a);d.appendChild(b);g.appendChild(d);'
   + '      } else {'
-  + '        g.appendChild(cell("",r[0]));g.appendChild(cell("n",r[1]));g.appendChild(cell("c",r[2]));}'
-  + '    });'
-  + '  } else {'
-  + '    g.className="tg";'
-  + '    (t.rows||[]).forEach(function(r){'
-  + '      var cls=["t","","m","c","x"];'
-  + '      for(i=0;i<5;i++) g.appendChild(cell(cls[i],r[i]));});}'
+  + '        g.appendChild(cell("",r[0]));g.appendChild(cell(t.k==="snow"?"m":"n",r[1]));g.appendChild(cell("c",r[2]));}'
+  + '    });}'
   + '  tipEl.innerHTML="";tipEl.appendChild(g);}'
   + 'document.querySelectorAll("[data-tipkey]").forEach(function(el){'
   + '  el.addEventListener("mouseenter",function(){fillTip(TIPS[+el.dataset.tipkey]||{k:"legs",rows:[]});tipEl.style.opacity=1;});'

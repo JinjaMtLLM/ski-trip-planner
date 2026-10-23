@@ -51,22 +51,39 @@ function nightStates(pathLegs, startAbs, endAbs, boundaryMin, freeWaitMin) {
 }
 
 // ---------------------------------------------------------------- 雪时
-/** 到场→离场窗口与日场/夜场营业时间的交集，夜色按 nightWeight 折算 */
-function snowHours(startAbs, endAbs, R) {
+/**
+ * 逐日逐场的实际滑行时段（[起, 止, 场]），用于报告里把 26.12h 摊开成
+ * 「11/28 09:32-16:30 + 18:30-21:30」这样的明细。
+ * 倒闭日（nightClosedWeekdays）与没有交集的日子不出现在结果里。
+ */
+function snowWindows(startAbs, endAbs, R) {
   const dayOpen = hhmm(R.dayOpen), dayClose = hhmm(R.dayClose);
   const nightOpen = R.nightOpen ? hhmm(R.nightOpen) : null;
   const nightClose = R.nightClose ? hhmm(R.nightClose) : null;
-  const w = R.nightWeight == null ? 0.5 : R.nightWeight;
   const closed = new Set(R.nightClosedWeekdays || []);
+  const out = [];
+  if (!(endAbs > startAbs)) return out;
+  for (let d = dayOf(startAbs); d <= dayOf(endAbs); d++) {
+    const segs = [];
+    const dA = Math.max(d * DAY + dayOpen, startAbs), dB = Math.min(d * DAY + dayClose, endAbs);
+    if (dB > dA) segs.push([dA, dB, 'day']);
+    if (nightOpen !== null && !closed.has(wdOf(d))) {
+      const nA = Math.max(d * DAY + nightOpen, startAbs), nB = Math.min(d * DAY + nightClose, endAbs);
+      if (nB > nA) segs.push([nA, nB, 'night']);
+    }
+    if (segs.length) out.push({ day: d, segs });
+  }
+  return out;
+}
+
+/** 到场→离场窗口与日场/夜场营业时间的交集，夜色按 nightWeight 折算 */
+function snowHours(startAbs, endAbs, R) {
+  const w = R.nightWeight == null ? 0.5 : R.nightWeight;
   let day = 0, night = 0, eff = 0;
-  if (endAbs > startAbs) {
-    for (let d = dayOf(startAbs); d <= dayOf(endAbs); d++) {
-      const ovD = Math.max(0, Math.min(d * DAY + dayClose, endAbs) - Math.max(d * DAY + dayOpen, startAbs));
-      day += ovD; eff += ovD / 60;
-      if (nightOpen !== null && !closed.has(wdOf(d))) {
-        const ovN = Math.max(0, Math.min(d * DAY + nightClose, endAbs) - Math.max(d * DAY + nightOpen, startAbs));
-        night += ovN; eff += (ovN / 60) * w;
-      }
+  for (const dw of snowWindows(startAbs, endAbs, R)) {
+    for (const [a, b, kind] of dw.segs) {
+      const m = b - a;
+      if (kind === 'day') { day += m; eff += m / 60; } else { night += m; eff += (m / 60) * w; }
     }
   }
   return { hDay: +(day / 60).toFixed(2), hNight: +(night / 60).toFixed(2), hEff: +eff.toFixed(2) };
@@ -217,6 +234,6 @@ function prunePaths(paths, dir, cfg) {
 
 module.exports = {
   DAY, dayOf, wdOf, hhmm,
-  nightStates, snowHours, leaveOfOut, leaveOfRet, midWorkdays,
+  nightStates, snowHours, snowWindows, leaveOfOut, leaveOfRet, midWorkdays,
   buildGraph, dfsPaths, retimeReturn, summarize, prunePaths,
 };
