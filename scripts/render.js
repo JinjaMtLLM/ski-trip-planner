@@ -63,10 +63,23 @@ const esc = (s) => String(s == null ? '' : s)
 const AIRPORTS = new Set(Object.keys(net.nodes).filter((id) => (net.nodes[id] || {}).kind === 'airport'));
 const tagOf = (id) => (AIRPORTS.has(id) ? id : nodeName(id));
 
-/** 一段路在 hover 里的班次列：航班显示航班号，高铁显示车次，打车只显示方式 */
+/**
+ * 打车/接驳的里程：优先用结构化字段 km（legs.js 从路径表的 ground[].km 带过来），
+ * 老 top.json 没有这个字段，就退回从备注里抠「62.7km」。
+ */
+const kmOf = (g) => {
+  if (g.km) return Number(g.km);
+  const m = /([\d.]+)\s*km/i.exec(String(g.note || ''));
+  return m ? Number(m[1]) : null;
+};
+/** 62.7km / 33km —— 一位小数、整数不带 .0 */
+const fmtKm = (v) => (v == null || !isFinite(v) ? '' : (Math.round(v * 10) / 10) + 'km');
+
+/** 一段路在 hover 里的班次列：航班显示航班号，高铁显示车次，打车/接驳显示方式 + 里程 */
 const tagCol = (g) => {
   if (g.mode === 'flight' || g.mode === 'rail') return g.ref || MODE_CN[g.mode];
-  return MODE_CN[g.mode] || g.mode;
+  const km = fmtKm(kmOf(g));
+  return (MODE_CN[g.mode] || g.mode) + (km ? ' ' + km : '');
 };
 
 /**

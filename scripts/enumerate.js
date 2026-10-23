@@ -75,6 +75,7 @@ const slim = (p) => p.legs.map((g) => ({
   cost: g.cost || 0,
   stop: g.stopMinutes || 0,
   seg: g.seg || 1,
+  km: g.km || null,          // 打车/接驳的里程，hover 里要标出来
   note: g.note || '',
 }));
 

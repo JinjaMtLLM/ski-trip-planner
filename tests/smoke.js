@@ -360,16 +360,19 @@ const fl = (from, to, ref, dep, arr, cost) => ({
   depAbs: at(dep[0], dep[1], dep[2]), arrAbs: at(arr[0], arr[1], arr[2]),
   cost, entryMin: 30, exitMin: 20, scheduled: true, stopMinutes: 0,
 });
-const tx = (from, to) => ({
+// o.km 决定是结构化字段还是「备注里带里程」的老数据，两条路都要能标出里程
+const tx = (from, to, o) => ({
   mode: 'taxi', from, to, ref: '打车', depAbs: null, arrAbs: null,
   durMin: 120, waitMin: 0, cost: 300, entryMin: 0, exitMin: 0, scheduled: false,
+  km: (o || {}).km == null ? null : o.km,
+  note: (o || {}).note || '',
 });
 
 fs.writeFileSync(path.join(E2E, 'legs.json'), JSON.stringify([
   fl('AAA', 'BBB', 'T1', ['2026-11-27', 19, 0], ['2026-11-27', 22, 0], 800),
   fl('AAA', 'BBB', 'T2', ['2026-11-28', 8, 0], ['2026-11-28', 11, 0], 700),
-  tx('BBB', 'RESORT'),
-  tx('RESORT', 'BBB'),
+  tx('BBB', 'RESORT', { km: 48.5 }),                 // 结构化 km
+  tx('RESORT', 'BBB', { note: '测试段 48.5km' }),    // 老数据：只能从备注里抠
   fl('BBB', 'AAA', 'T3', ['2026-11-29', 18, 0], ['2026-11-29', 21, 0], 800),
   fl('BBB', 'AAA', 'T4', ['2026-11-30', 15, 0], ['2026-11-30', 18, 0], 900),
 ]), 'utf8');
@@ -409,6 +412,18 @@ check('汇报页：全部年假在首位、各档最优横排、含趋势折线�
   assert.ok(/<svg[\s\S]*元\/雪日/.test(html), '缺趋势折线图');
   const plainTabs = (html.match(/class="tab"/g) || []).length;
   assert.strictEqual(plainTabs, e2eTop.buckets.length, 'Tab 数应等于档位数（首位那个带 on）');
+});
+
+check('hover 明细里的打车段标出里程（结构化 km 与备注兜底都要认）', () => {
+  const html = fs.readFileSync(path.join(E2E, 'report.html'), 'utf8');
+  const m = /var TIPS=(\[[\s\S]*?\]);/.exec(html);
+  assert.ok(m, '页面里找不到 TIPS 数据');
+  const rows = JSON.parse(m[1]).filter((t) => t.k === 'legs').flatMap((t) => t.rows || []);
+  const taxi = rows.filter((r) => /^\u6253\u8f66/.test(r[2]));
+  assert.ok(taxi.length > 0, 'hover 明细里没有打车段');
+  const bad = taxi.filter((r) => !/^\u6253\u8f66 [\d.]+km$/.test(r[2]));
+  assert.strictEqual(bad.length, 0, '打车段缺里程：' + JSON.stringify(bad.slice(0, 3)));
+  assert.ok(taxi.some((r) => r[2] === '\u6253\u8f66 48.5km'), '里程数值不对：' + JSON.stringify(taxi.slice(0, 3)));
 });
 
 // ── 5. 积分口径：合并日期才是省分手段 ─────────────────────────────────
