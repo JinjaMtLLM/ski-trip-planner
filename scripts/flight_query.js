@@ -6,14 +6,14 @@
  * 三种用法，按日期窗口自动决定查几天：
  *
  *   1) 按请假档位自动铺日期（推荐）
- *      node flight_query.js --from SZX --to CGQ --weekend 2026-12-11 --leave-days 1 --both --out w1.json
+ *      node flight_query.js --from SZX --to CGQ --weekend 2027-01-08 --leave-days 1 --both --out w1.json
  *        请假 1 天 → 去程 周四/周五/周六，返程 周日/周一/周二
  *
  *   2) 显式日期
- *      node flight_query.js --from SZX --to CGQ --dates 2026-12-11,2026-12-12
+ *      node flight_query.js --from SZX --to CGQ --dates 2027-01-08,2027-01-09
  *
  *   3) 单日（旧用法）
- *      node flight_query.js --from SZX --to CGQ --date 2026-12-11
+ *      node flight_query.js --from SZX --to CGQ --date 2027-01-08
  *
  * 选项：
  *   --from <城市或机场三字码>   城市码会覆盖同城所有机场（BJS = PEK+PKX）
@@ -53,6 +53,7 @@ const fs = require('fs');
 const { tokenSource } = require('./variflight');
 const { queryFlights, leaveWindow, VariflightError } = require('./variflight');
 const journal = require('./journal');
+const mcpJson = require('./mcp_json');
 
 function die(msg, hint) {
   console.error('\u2716 ' + msg + (hint ? '\n  ' + hint : ''));
@@ -103,7 +104,7 @@ const DATES = getArg('dates');
 const DATE = getArg('date');
 
 if (WEEKEND || LEAVE !== undefined) {
-  if (!WEEKEND) die('用 --leave-days 时必须同时给 --weekend', '例：--weekend 2026-12-11 --leave-days 1');
+  if (!WEEKEND) die('用 --leave-days 时必须同时给 --weekend', '例：--weekend 2027-01-08 --leave-days 1');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(WEEKEND)) die('--weekend 需为 YYYY-MM-DD');
   const D = LEAVE === undefined ? 0 : Number(LEAVE);
   let w;
@@ -137,7 +138,8 @@ const run = journal.begin('flight_query.js', args, { enabled: !hasFlag('no-journ
   if (!tokenSource()) {
     if (CACHE.mode !== 'auto') {
       die('缺少飞常准 MCP Key',
-        '设置环境变量 VARIFLIGHT_MCP_KEY，或在 ~/.workbuddy-ai/mcp.json 里配置 variflight-mcp。\n  申请：https://cmcp.variflight.com/');
+        '设置环境变量 VARIFLIGHT_MCP_KEY，或在 MCP 配置（'
+        + mcpJson.short(mcpJson.writeTarget()) + '）里配置 variflight-mcp。\n  申请：https://cmcp.variflight.com/');
     }
     log('⚠ 未配置飞常准 MCP Key：本次只能用缓存，缺缓存的航线会失败。');
   }

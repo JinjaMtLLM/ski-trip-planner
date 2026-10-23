@@ -15,14 +15,12 @@
  *   - SQL 输出上限 200 行，超了 truncated: true 且会静默丢数据
  *   - 同一 O-D 的多个日期必须放进同一次调用，拆开查会重复计费
  *
- * key：优先读环境变量 VARIFLIGHT_MCP_KEY；未设置时回退读
- *      ~/.workbuddy-ai/mcp.json 里 variflight-mcp 的 Authorization 头。
+ * key：优先读环境变量 VARIFLIGHT_MCP_KEY；未设置时回退读 agent 的 MCP 配置
+ *      里 variflight-mcp 的 Authorization 头（路径解析见 scripts/mcp_json.js）。
  */
 
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
 const cache = require('./cache');
+const mcpJson = require('./mcp_json');
 
 const ENDPOINT = 'https://c-gw.variflight.com/chat_message/mcp/api/legacy';
 const PROTOCOL = '2025-03-26';
@@ -37,23 +35,20 @@ class VariflightError extends Error {
 }
 
 // ── 凭据 ────────────────────────────────────────────────────────────────
+function tokenFromMcpConfig() {
+  const hit = mcpJson.findServer();
+  return hit ? mcpJson.bearerOf(hit.server) : '';
+}
+
 function token() {
   const env = (process.env.VARIFLIGHT_MCP_KEY || '').trim();
   if (env) return env;
-  try {
-    const p = path.join(os.homedir(), '.workbuddy-ai', 'mcp.json');
-    const j = JSON.parse(fs.readFileSync(p, 'utf8'));
-    const servers = j.mcpServers || j.mcp || {};
-    const auth = (servers['variflight-mcp'] || {}).headers?.Authorization || '';
-    const m = /^Bearer\s+(.+)$/i.exec(String(auth).trim());
-    if (m) return m[1].trim();
-  } catch (_) { /* 没有就按未设置处理 */ }
-  return '';
+  return tokenFromMcpConfig();
 }
 
 const tokenSource = () => (process.env.VARIFLIGHT_MCP_KEY || '').trim()
   ? 'env:VARIFLIGHT_MCP_KEY'
-  : token() ? '~/.workbuddy-ai/mcp.json' : '';
+  : token() ? mcpJson.short(mcpJson.findServer().path) : '';
 
 // ── JSON-RPC / SSE ──────────────────────────────────────────────────────
 /** 响应可能是裸 JSON，也可能是 SSE（id: / event: / data: 三行），两种都吃 */

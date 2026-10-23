@@ -12,7 +12,7 @@ No resort, airport, date or price is hard-coded. Every number comes from the use
 
 - Node.js ≥ 18 (uses built-in `fetch`, no npm dependencies)
 - Python 3.9+ — only for `tools/package.py`
-- API keys, read from environment variables or `~/.workbuddy-ai/mcp.json`:
+- API keys, read from environment variables; the Variflight key may also come from your agent's MCP config:
 
 | Variable | Role | Service | Used for | Get it at |
 |---|---|---|---|---|
@@ -42,7 +42,7 @@ Set up the MCP in one command:
 VARIFLIGHT_MCP_KEY="your key" node scripts/mcp_config.js --write
 ```
 
-It merges the entry into `~/.workbuddy-ai/mcp.json` (backing up the old file, leaving other MCP servers untouched, masking the key in its output). Then click **Trust** on the custom connector in WorkBuddy's connector manager — that step can't be scripted. `--check` verifies, `--print` shows the fragment, `--remove` undoes it.
+It merges the entry into your agent's MCP config — it picks whichever config already exists (`~/.workbuddy/mcp.json`, then `~/.workbuddy-ai/mcp.json`), and `--file <path>` or `SKI_MCP_CONFIG` overrides that. The old file is backed up, other MCP servers are left untouched, and the key is masked in the output. Then approve/trust the new server in your agent's connector manager — that step can't be scripted. `--check` verifies, `--print` shows the fragment, `--remove` undoes it.
 
 When a key is missing or invalid the scripts print the same setup guide — apply link, the one-command path, the exact variable name, the per-platform `export`/`set`/`$env:` line, the verification command, and its cost.
 
@@ -87,10 +87,10 @@ Scripts can also be run by hand:
 node scripts/amap_route.js --from "Some Airport" --to "Some Resort" --from-city "Some City"
 
 # flights for one weekend, both directions, dates fanned out by leave days
-node scripts/flight_query.js --from SZX --to CGQ --weekend 2026-12-11 --leave-days 1 --both --out weekend-1211.json
+node scripts/flight_query.js --from SZX --to CGQ --weekend 2027-01-08 --leave-days 1 --both --out weekend-0108.json
 
 # flights for one date, direct + connecting, written as a config-ready array
-node scripts/flight_query.js --from SZX --to CGQ --date 2026-12-05 --type both --out out-2026-12-05.json
+node scripts/flight_query.js --from SZX --to CGQ --date 2027-01-09 --type both --out out-2027-01-09.json
 
 # compute and render
 node scripts/planner.js config.json --csv
@@ -154,7 +154,8 @@ Disable with `--no-journal` or `SKI_NO_JOURNAL=1`.
 | `scripts/variflight.js` | Variflight MCP client: JSON-RPC/SSE parsing, SQL builder, date windows, row mapping, cache plumbing |
 | `scripts/cache.js` | Query cache: raw responses on disk keyed by tool + arguments, with freshness window, failure fallback and pruning |
 | `scripts/journal.js` | Run journal: per-run record of commands, step I/O, failing SQL and cache keys, so a broken chain can be repaired without replaying it |
-| `scripts/mcp_config.js` | One-command MCP setup: merges `variflight-mcp` into `~/.workbuddy-ai/mcp.json` with backup, `--check`, `--print`, `--remove` |
+| `scripts/mcp_config.js` | One-command MCP setup: merges `variflight-mcp` into the agent's MCP config with backup, `--check`, `--print`, `--remove` |
+| `scripts/mcp_json.js` | Locates that config file — `SKI_MCP_CONFIG`, then the common per-agent paths — and reads/writes one shared resolution |
 | `scripts/amap_route.js` | Amap driving time, outputs `toResortMinutes` including the buffer |
 | `scripts/wendao.js` | Ctrip Wendao request/parse implementation for programmatic use; not on the main path |
 | `scripts/amap.js` | Geocoding and driving route implementation, shared by the route scripts |
@@ -178,10 +179,13 @@ Disable with `--no-journal` or `SKI_NO_JOURNAL=1`.
 ## Development
 
 ```bash
+node tests/smoke.js         # offline regression: leave-day boundaries, ordering, error exits
 python tools/package.py     # -> dist/ski-trip-planner.zip, whitelisted files only
 ```
 
-The bundler uses the git file list, so `.gitignore` is respected and `.git/` never ends up in the archive. `tools/`, `.gitignore` and this README are dev-only and excluded; every other file must sit under `scripts/` or `references/` to be packaged at all, so local `config.json` files and query dumps can never slip into a release.
+`tests/smoke.js` runs the planner on a synthetic config (fictional airports, no network, no keys) and asserts the things that have broken before: the three leave-day cut-offs, per-day ascending order, and hard failure on a missing field or a swapped cut-off pair. CI runs the same two commands on every push and pull request.
+
+The bundler uses the git file list, so `.gitignore` is respected and `.git/` never ends up in the archive. `tools/`, `tests/`, `.github/`, `.gitignore` and this README are dev-only and excluded; every other file must sit under `scripts/` or `references/` to be packaged at all, so local `config.json` files and query dumps can never slip into a release.
 
 `SKILL.md`, the references and the code comments are written in Chinese — that is the language of the agent-facing instructions. This README is in English for anyone browsing the repo.
 

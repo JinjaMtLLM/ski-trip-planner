@@ -1,0 +1,19 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+      - name: Syntax check
+        run: for f in scripts/*.js tests/*.js; do node --check "$f"; done
+      - name: Smoke test (offline, no keys)
+        run: node tests/smoke.js

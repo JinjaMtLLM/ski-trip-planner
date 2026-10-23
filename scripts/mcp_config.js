@@ -1,15 +1,17 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * mcp_config.js — 一条命令把飞常准 MCP 写进 WorkBuddy 的 MCP 配置
+ * mcp_config.js — 一条命令把飞常准 MCP 写进 agent 的 MCP 配置
  *
- * 为什么单独一个脚本：飞常准 MCP 是必选数据源，但手动编辑
- * ~/.workbuddy-ai/mcp.json 容易写错结构、覆盖掉别的 MCP、或者把 key 贴进仓库。
- * 这里做成幂等合并 + 写前备份 + 不回显 key。
+ * 为什么单独一个脚本：飞常准 MCP 是必选数据源，但手动编辑 MCP 配置文件容易
+ * 写错结构、覆盖掉别的 MCP、或者把 key 贴进仓库。这里做成幂等合并 +
+ * 写前备份 + 不回显 key。
  *
  * 用法：
  *   VARIFLIGHT_MCP_KEY="你的 key" node scripts/mcp_config.js --write
- *       写进 ~/.workbuddy-ai/mcp.json（已有内容先备份到 .bak-<时间戳>）
+ *       写进已存在的 MCP 配置（已有内容先备份到 .bak-<时间戳>）
+ *   node scripts/mcp_config.js --write --file <path>
+ *       指定配置文件；也可用环境变量 SKI_MCP_CONFIG 统一指定
  *   node scripts/mcp_config.js --check
  *       只看有没有配好、是否与环境变量一致，不写文件
  *   node scripts/mcp_config.js --print
@@ -17,16 +19,16 @@
  *   node scripts/mcp_config.js --remove
  *       移除 variflight-mcp 条目（先备份）
  *
- * 写完之后还需要在 WorkBuddy 的「连接器管理 → 右上角自定义连接器」里点 Trust，
+ * 写完之后还需要在你所用 agent 的连接器管理里把这个 MCP 设为信任（Trust），
  * 新 MCP 才会生效——这一步无法用脚本代替。
  */
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const mcpJson = require('./mcp_json');
 
-const SERVER_NAME = 'variflight-mcp';
-// WorkBuddy 需要 /legacy 兼容地址；标准 MCP 客户端用 .../mcp/api
+const SERVER_NAME = mcpJson.SERVER_NAME;
+// `/legacy` 是兼容地址；标准 MCP 客户端用 .../mcp/api
 const ENDPOINT = 'https://c-gw.variflight.com/chat_message/mcp/api/legacy';
 
 const args = process.argv.slice(2);
@@ -36,9 +38,11 @@ const getArg = (name, dflt) => {
   return i > -1 && args[i + 1] !== undefined && !args[i + 1].startsWith('--') ? args[i + 1] : dflt;
 };
 
-const configPath = () => getArg('file') || path.join(os.homedir(), '.workbuddy-ai', 'mcp.json');
+// 路径优先级：--file > SKI_MCP_CONFIG > 已存在的 MCP 配置 > 默认位置
+const configPath = () => getArg('file') || mcpJson.writeTarget();
 const mask = (k) => (k ? k.slice(0, 6) + '…' + k.slice(-4) : '');
-const key = () => (getArg('key') || process.env.VARIFLIGHT_MCP_KEY || '').trim();
+// key 只从环境变量读：命令行参数会留在 shell history 和进程列表里
+const key = () => (process.env.VARIFLIGHT_MCP_KEY || '').trim();
 
 function readConfig(p) {
   if (!fs.existsSync(p)) return { data: { mcpServers: {} }, existed: false };
@@ -110,7 +114,7 @@ if (has('check')) {
     console.log('注意     环境变量里的 key 与配置文件里的不一致，脚本会优先用环境变量');
   }
   if (current.url !== ENDPOINT) {
-    console.log('注意     地址与预期不同，WorkBuddy 需要 /legacy 兼容地址：' + ENDPOINT);
+    console.log('注意     地址与默认的兼容地址不同：' + ENDPOINT);
   }
   const ok = Boolean(cfgKey) && current.url === ENDPOINT;
   console.log('');
@@ -162,7 +166,7 @@ if (has('write')) {
   if (b) console.log('  备份 ' + b);
   console.log('');
   console.log('还差一步（脚本无法代劳）：');
-  console.log('  WorkBuddy → 连接器管理 → 右上角「自定义连接器」→ 找到 ' + SERVER_NAME + ' → 点 Trust');
+  console.log('  在你所用 agent 的连接器管理里找到 ' + SERVER_NAME + '，设为信任（Trust）');
   console.log('  启用后验证：node scripts/doctor.js --probe（免费，不扣积分）');
   process.exit(0);
 }
@@ -176,7 +180,7 @@ function manualGuideForWrite() {
     '  申请 key：https://cmcp.variflight.com/',
     '  写入位置：' + p,
     '',
-    '  写完后还要在 WorkBuddy 连接器管理页右上角「自定义连接器」里点 Trust。',
+    '  写完后还要在你所用 agent 的连接器管理里把它设为信任（Trust）。',
     '  不想写文件也可以只设环境变量 VARIFLIGHT_MCP_KEY，脚本优先读它。',
   ].join('\n');
 }

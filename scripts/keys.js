@@ -26,10 +26,10 @@ const SPECS = {
     applyUrl: 'https://cmcp.variflight.com/',
     applyNote: '微信扫码或手机号登录 → 控制台生成 MCP Key。每月 100 积分，按唯一「出发→到达」城市对计费',
     probeCost: '免费 —— initialize + tools/list 不扣积分',
-    example: 'node scripts/flight_query.js --from SZX --to CGQ --weekend 2026-12-11 --leave-days 1 --both --out w1.json',
+    example: 'node scripts/flight_query.js --from SZX --to CGQ --weekend 2027-01-08 --leave-days 1 --both --out w1.json',
     quickSetup: 'node scripts/mcp_config.js --write',
-    quickSetupNote: '写进 ~/.workbuddy-ai/mcp.json（已有配置先备份），之后所有脚本自动读取；'
-      + '还需在 WorkBuddy 连接器管理页右上角「自定义连接器」里点 Trust 启用',
+    quickSetupNote: '写进 agent 的 MCP 配置（已有配置先备份，路径可用 --file 或 SKI_MCP_CONFIG 指定），'
+      + '之后所有脚本自动读取；还需在连接器管理里把它设为信任（Trust）才生效',
     fallback: '也可以只设环境变量 VARIFLIGHT_MCP_KEY，脚本优先读它。',
     manual: '完全不配置时走「手动录入航班」模式：用户自己给航班时刻与价格，或由你按公开信息整理后请用户核对，'
       + '再手工拼 config.json 交给 planner.js。见 references/manual-flights.md。',

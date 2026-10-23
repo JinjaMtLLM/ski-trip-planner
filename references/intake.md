@@ -17,7 +17,7 @@ header: 航班数据
 question: 查航班要一个飞常准 MCP 的 key，在 https://cmcp.variflight.com/ 申请（微信扫码即可）。
           拿到后一条命令就能配好：
           VARIFLIGHT_MCP_KEY="你的 key" node scripts/mcp_config.js --write
-          配完在 WorkBuddy 连接器管理右上角「自定义连接器」点 Trust 生效。
+          配完在连接器管理里把它设为信任（Trust）才生效。
           不想配也可以：我按你给的航班手动录入，照样能算出各档排名，只是没有自动比价。
 options:
   - 我去申请，稍后给你

@@ -146,7 +146,7 @@ async function main() {
   const rows = [];
   for (const name of ORDER) {
     const st = status(name);
-    // 飞常准 key 允许来自 ~/.workbuddy-ai/mcp.json，status() 只看环境变量，这里补上
+    // 飞常准 key 允许来自 MCP 配置（见 scripts/mcp_json.js），status() 只看环境变量，这里补上
     if (name === 'VARIFLIGHT_MCP_KEY') {
       const k = token();
       st.set = Boolean(k);

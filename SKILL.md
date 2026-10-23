@@ -190,7 +190,7 @@ node scripts/flight_query.js \
 
 ## API Key 配置
 
-key 都从环境变量读取（飞常准允许回退读 `~/.workbuddy-ai/mcp.json`），变量名固定。
+key 都从环境变量读取（飞常准允许回退读 agent 的 MCP 配置，路径解析见 `scripts/mcp_json.js`），变量名固定。
 
 | 变量 | 档位 | 服务 | 用途 | 申请地址 |
 |---|---|---|---|---|
@@ -223,8 +223,8 @@ key 都从环境变量读取（飞常准允许回退读 `~/.workbuddy-ai/mcp.jso
    VARIFLIGHT_MCP_KEY="你的 key" node scripts/mcp_config.js --write
    ```
 
-   它会合并写进 `~/.workbuddy-ai/mcp.json`（已有内容先备份、其他 MCP 不动、key 打码显示）。
-   之后还需要在 WorkBuddy 的「连接器管理 → 右上角自定义连接器」里点 **Trust**，新 MCP 才生效——这步无法脚本代替。
+   它会合并写进已存在的 MCP 配置文件（已有内容先备份、其他 MCP 不动、key 打码显示）；路径可用 `--file <path>` 或环境变量 `SKI_MCP_CONFIG` 指定。
+   之后还需要在连接器管理里把这个 MCP 设为信任（**Trust**），新 MCP 才生效——这步无法脚本代替。
    检查是否配好：`node scripts/mcp_config.js --check`。
 
    **环境变量（三者通用）**：
@@ -266,7 +266,7 @@ $env:VARIFLIGHT_MCP_KEY = [Environment]::GetEnvironmentVariable('VARIFLIGHT_MCP_
 
 - 变量名完全一致：`VARIFLIGHT_MCP_KEY`、`WENDAO_API_KEY`、`AMAP_API_KEY`。
 - 高德 key 必须是**「Web 服务」**类型，并在控制台开通「地理编码」与「驾车路径规划」两项服务。
-- key 只从环境变量或 `~/.workbuddy-ai/mcp.json` 读取：不写入 `config.json`，不写进 shell 脚本或任何仓库文件，不作为命令行参数传递，回复中不回显完整内容。
+- key 只从环境变量或 agent 的 MCP 配置读取：不写入 `config.json`，不写进 shell 脚本或任何仓库文件，不作为命令行参数传递，回复中不回显完整内容。
 - **先跑零成本检查**（`node scripts/doctor.js`，只读配置不发请求），再决定要不要 `--probe`。
 - 缺 `VARIFLIGHT_MCP_KEY` 时先引导；**用户拒绝配置就直接转手动录入**（第 3 步路径 B），不要反复劝。
 - 缺 `AMAP_API_KEY` 不阻塞：车程优先用问道的值，其次问用户。
@@ -289,7 +289,8 @@ $env:VARIFLIGHT_MCP_KEY = [Environment]::GetEnvironmentVariable('VARIFLIGHT_MCP_
 | `scripts/variflight.js` | 飞常准 MCP 客户端：JSON-RPC/SSE 解析、SQL 构造、日期窗口、结果映射、缓存读写 |
 | `scripts/cache.js` | 查询结果缓存：按 (工具, 参数) 哈希落盘原始返回，带新鲜期、失败回退、过期清理；也可单独 `node scripts/cache.js list` 维护 |
 | `scripts/journal.js` | 运行记录：每次运行写 `runs/<runId>.json`，含命令行、每步输入输出、失败 SQL、缓存 key；`list` / `show` / `clear` |
-| `scripts/mcp_config.js` | 一条命令把飞常准 MCP 合并写进 `~/.workbuddy-ai/mcp.json`，带备份与 `--check` / `--print` / `--remove` |
+| `scripts/mcp_config.js` | 一条命令把飞常准 MCP 合并写进 agent 的 MCP 配置（路径见 `scripts/mcp_json.js`），带备份与 `--check` / `--print` / `--remove` |
+| `scripts/mcp_json.js` | MCP 配置文件的路径解析：`SKI_MCP_CONFIG` → `~/.workbuddy/mcp.json` → `~/.workbuddy-ai/mcp.json`，读写共用 |
 | `scripts/amap_route.js` | 高德驾车用时查询，输出含预留的 `toResortMinutes`。兜底用，不是主路径 |
 | `scripts/wendao.js` | 携程问道的请求与解析实现，供需要编程调用的场景使用。主流程不经过它，粗筛直接按 `references/wendao-prompts.md` 发原始请求 |
 | `scripts/amap.js` | 地理编码与驾车路径规划实现，被上面两个路线脚本共用 |
