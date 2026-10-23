@@ -15,6 +15,7 @@
 const DAY = 1440;
 
 const dayOf = (a) => Math.floor(a / DAY);
+const dateDay = (s) => Math.floor(Date.parse(String(s).slice(0, 10) + 'T00:00:00Z') / 86400000);
 const wdOf = (d) => new Date(d * 86400000).getUTCDay();
 const hhmm = (t) => {
   const m = /^(\d{1,2}):(\d{2})$/.exec(String(t));
@@ -61,9 +62,14 @@ function snowWindows(startAbs, endAbs, R) {
   const nightOpen = R.nightOpen ? hhmm(R.nightOpen) : null;
   const nightClose = R.nightClose ? hhmm(R.nightClose) : null;
   const closed = new Set(R.nightClosedWeekdays || []);
+  // 雪季开板 / 封板：写了就只算这区间内的日子。日本雪场常分区域开板，
+  // 不设这条会把「开板前落地」算成一整天雪时，排名直接错。
+  const seasonFrom = R.seasonStart ? dateDay(R.seasonStart) : -Infinity;
+  const seasonTo = R.seasonEnd ? dateDay(R.seasonEnd) : Infinity;
   const out = [];
   if (!(endAbs > startAbs)) return out;
   for (let d = dayOf(startAbs); d <= dayOf(endAbs); d++) {
+    if (d < seasonFrom || d > seasonTo) continue;
     const segs = [];
     const dA = Math.max(d * DAY + dayOpen, startAbs), dB = Math.min(d * DAY + dayClose, endAbs);
     if (dB > dA) segs.push([dA, dB, 'day']);
@@ -142,6 +148,9 @@ function dfsPaths(adj, src, dst, opts) {
   const maxPaths = o.maxPaths || 400000;
   const startT = o.minDep || 0;
   const maxDep = o.maxDep == null ? Infinity : o.maxDep;
+  // 单节点最长候车：不加这条，DFS 会在 7 天窗口里把「在长野干等三天再走」也算成一条路径，
+  // 分支数直接爆炸、撞满 maxPaths 后整批结果被截断（实测全变成 0 条可行）。
+  const maxGapMin = o.maxGapMin == null ? Infinity : o.maxGapMin;
   const results = [];
 
   function walk(node, t, legs, visited) {
@@ -155,10 +164,23 @@ function dfsPaths(adj, src, dst, opts) {
         if (t + g.entryMin > g.depAbs) continue;
         dep = g.depAbs; arr = g.arrAbs;
       } else {
-        // 即到即走：dep 记「叫车/上车时刻」，等车时间算在行程里
-        dep = t; arr = t + (g.waitMin || 0) + g.durMin;
+        // 即到即走：dep 记「到站时刻」，等车时间算在行程里。
+        // 带服务时间窗的（日本电车按平均候车估算）：上车时刻落在窗外就顺延到首班/末班。
+        let ready = t;
+        const wait = g.waitMin || 0;
+        if (g.serviceFrom != null || g.serviceTo != null) {
+          const from = g.serviceFrom == null ? 0 : g.serviceFrom;
+          const to = g.serviceTo == null ? DAY : g.serviceTo;
+          const b = ready + wait;
+          const bd = Math.floor(b / DAY), bt = b - bd * DAY;
+          if (bt > to) ready = (bd + 1) * DAY + from - wait;       // 已收班：等次日首班
+          else if (bt < from) ready = bd * DAY + from - wait;      // 首班未开：等当日首班
+        }
+        dep = ready; arr = ready + wait + g.durMin;
       }
       if (dep < startT || dep > maxDep) continue;
+      // 起点不设候车上限（否则「周三、周六飞」会被当成候车超时全砍掉）
+      if (legs.length && dep - t > maxGapMin) continue;
       visited.add(g.to);
       legs.push({ ...g, dep, arr });
       walk(g.to, arr + g.exitMin, legs, visited);
@@ -181,12 +203,30 @@ function retimeReturn(legs) {
   let k = 0;
   while (k < legs.length && !legs[k].scheduled) k++;
   if (k === 0 || k >= legs.length) return legs;
+  const orig = legs.slice();
   let t = legs[k].dep - legs[k].entryMin;
   for (let i = k - 1; i >= 0; i--) {
     const g = legs[i];
-    t = t - g.durMin - (g.waitMin || 0);
-    legs[i] = { ...g, dep: t, arr: t + (g.waitMin || 0) + g.durMin };
+    const wait = g.waitMin || 0;
+    let dep = t - g.durMin - wait;
+    // 有服务时间窗时取「不晚于目标时刻的最后一班」：目标在末班之后 → 当日末班；
+    // 目标在首班之前 → 前一日末班。这样后推出来的离场时刻仍是可执行的。
+    if (g.serviceFrom != null || g.serviceTo != null) {
+      const from = g.serviceFrom == null ? 0 : g.serviceFrom;
+      const to = g.serviceTo == null ? DAY : g.serviceTo;
+      const b = dep + wait;
+      const bd = Math.floor(b / DAY), bt = b - bd * DAY;
+      if (bt > to) dep = bd * DAY + to - wait;
+      else if (bt < from) dep = (bd - 1) * DAY + to - wait;
+    }
+    legs[i] = { ...g, dep, arr: dep + wait + g.durMin };
+    t = dep;
   }
+  // 窗口裁剪可能把前一段推得太早、导致与后一段脱节（理论上不该发生，发生就退回原始时刻）
+  for (let i = 0; i + 1 < k; i++) {
+    if (legs[i].arr + legs[i].exitMin > legs[i + 1].dep + 1e-9) return orig;
+  }
+  if (legs[k - 1].arr + legs[k - 1].exitMin > legs[k].dep + 1e-9) return orig;
   return legs;
 }
 
@@ -207,7 +247,7 @@ function summarize(pathLegs, boundaryMin, freeWaitMin, RULE) {
     firstDep,
     lastArr,
     ns,
-    route: legs.map((g) => g.from + '\u2192' + g.to + ' ' + g.ref).join(' | '),
+    route: legs.map((g) => g.from + '\u2192' + g.to + ' ' + (g.label || g.ref)).join(' | '),
     refs: legs.map((g) => g.ref),
     modes: legs.map((g) => g.mode),
   };

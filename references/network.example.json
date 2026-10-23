@@ -58,7 +58,8 @@
    "waitMin": 5,
    "cost": 200,
    "km": 50,
-   "note": "目的地机场→雪场 50km"
+   "note": "目的地机场→雪场 50km",
+   "cls": "打车"
   },
   {
    "from": "RESORT",
@@ -78,7 +79,11 @@
    "waitMin": 10,
    "cost": 0,
    "km": 20,
-   "note": "示例南站→雪场 20km，雪场接驳"
+   "note": "示例南站 ⇄ 雪场 20km，雪场接驳。cls 决定路径表与 hover 里的标签（巴士 20km）；serviceFrom/To 是首末班（当日分钟数）",
+   "cls": "巴士",
+   "service": "示例接驳",
+   "serviceFrom": 420,
+   "serviceTo": 1200
   },
   {
    "from": "RESORT",

@@ -131,13 +131,17 @@ function findEntryByTags(dir, q, dates) {
 // ---------------------------------------------------------------- 读航班缓存
 /** "机场→车站 33km" → "车站→机场 33km"（反向边用） */
 function flipNote(note) {
-  const m = /^([^→]+)\u2192([^\s]+)([\s\S]*)$/.exec(String(note));
-  if (!m) return note;
+  const s = String(note);
+  // 只有「一个箭头」的备注才翻得动方向；多段路线（羽田→品川→上野）翻了只会变成乱码，
+  // 这种备注请直接写成方向无关的「A ⇄ B」。
+  if ((s.match(/\u2192/g) || []).length !== 1) return s;
+  const m = /^([^\u2192]+)\u2192([^\s]+)([\s\S]*)$/.exec(s);
+  if (!m) return s;
   return m[2] + '\u2192' + m[1] + m[3];
 }function readCachedFlights(q, opts) {
   const dates = q.dates && q.dates.length ? q.dates : [q.date];
   const sources = dates.map((d) => ({ from: q.from, to: q.to, date: d }));
-  const sql = vf.buildSql(sources, (opts && opts.perTransfer) || 15);
+  const sql = vf.buildSql(sources, (opts && opts.perTransfer) || 15, q.market || (opts && opts.market));
   const key = cache.keyOf('getFlightTicketPrice', { sql });
   const dir = opts && opts.cacheDir ? path.resolve(opts.cacheDir) : cache.cacheDir();
   if (!dir) return { key, rows: null, reason: 'no-cache-dir' };
@@ -191,7 +195,11 @@ function buildLegs(caseCfg, opts) {
 
   // ── 航班 ──
   for (const q of caseCfg.flightQueries || []) {
-    const r = readCachedFlights(q, { ...o, perTransfer: caseCfg.params && caseCfg.params.perTransfer });
+    const r = readCachedFlights(q, {
+      ...o,
+      perTransfer: caseCfg.params && caseCfg.params.perTransfer,
+      market: q.market || (caseCfg.params && caseCfg.params.market),
+    });
     // 一个 query 可能带 dates[] 而不是单个 date，日志里两种都拼得出来
     const when = q.date || (q.dates || []).join('+');
     if (!r.rows) { stats.cacheMiss.push(q.from + '→' + q.to + ' ' + when + ' (' + r.reason + ')'); continue; }
@@ -274,6 +282,11 @@ function buildLegs(caseCfg, opts) {
     for (const [a, b] of [[g.from, g.to], [g.to, g.from]]) {
       // 备注按里程/车费写的，方向要跟着反过来，否则 hover 里会出现「机场→车站」贴在反向边的位置上
       const note = g.note && a !== g.from ? flipNote(g.note) : (g.note || '');
+      // 车种标签：路径表里给 cls（电车 / 特急 / 新干线 / 巴士），没给才用方式兜底。
+      // 标签带里程——「特急 33km」比「雪场接驳」有用得多，能一眼看出这段路值不值这个价。
+      const km = g.km || null;
+      const cls = g.cls || (g.mode === 'shuttle' ? '接驳' : g.mode === 'taxi' ? '打车' : g.mode === 'rail' ? '电车' : g.mode);
+      const label = km == null ? cls : cls + ' ' + (Math.round(km * 10) / 10) + 'km';
       legs.push({
         mode: g.mode,
         from: a, to: b,
@@ -282,14 +295,22 @@ function buildLegs(caseCfg, opts) {
         depAbs: null, arrAbs: null,
         durMin: g.min,
         waitMin: g.waitMin || 0,
+        // 服务时间窗（当日分钟数）。给了就表示「只在首末班之间可乘」：
+        // 到了太晚就等次日首班，太早就等当日首班。日本电车按平均候车估算时靠它兜住末班。
+        serviceFrom: g.serviceFrom == null ? null : Number(g.serviceFrom),
+        serviceTo: g.serviceTo == null ? null : Number(g.serviceTo),
         cost: g.cost || 0,
         fare: g.cost || 0,
         tax: 0,
-        ref: g.mode === 'shuttle' ? '雪场接驳' : '打车',
+        // service 由路径表显式给（如「スカイライナー」「京急+JR」）；没给才用通用名。
+        // 一个案例里有多条接驳时，全叫「雪场接驳」会把机场快线也标成雪场接驳。
+        ref: g.service || (g.mode === 'shuttle' ? '雪场接驳' : '打车'),
+        cls,
+        label,
         airline: null,
         seg: 1,
         seats: null,
-        km: g.km || null,
+        km,
         entryMin: (modeDef[g.mode] || {}).entryMin || 0,
         exitMin: (modeDef[g.mode] || {}).exitMin || 0,
         note,
@@ -310,7 +331,7 @@ function toRows(legs) {
     end: l.scheduled ? fmtAbs(l.arrAbs) : '—',
     cost: l.cost,
     mode: l.mode,
-    ref: l.ref,
+    ref: l.label || l.ref,
     seg: l.seg,
     note: l.note,
   }));

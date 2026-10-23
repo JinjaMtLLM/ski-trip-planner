@@ -28,6 +28,8 @@
  *   --both                     同时查返程方向，输出 { out, ret }
  *   --type <both|direct|transfer>  过滤，默认 both
  *   --per-transfer <n>         每个日期保留的中转条数，默认 15
+ *   --market <domestic|international>  航线市场，默认 domestic。港澳台/日韩/东南亚等
+ *                              国际航线必须写 international，否则返回 0 行
  *   --chunk <n>                每次调用的日期上限。默认 0 = 全部合并（1 次调用 = 1 积分）；
  *                              只有单日就会撞 200 行上限的干线航线才需要设成 1
  *   --no-refill                截断后不自动补查（默认会自动补，只补被砍到的那几天）
@@ -166,6 +168,7 @@ const run = journal.begin('flight_query.js', args, { enabled: !hasFlag('no-journ
 
   const perTransfer = getArg('per-transfer', 15);
   const chunk = getArg('chunk', 0);          // 0 = 该方向的全部日期合并成一次调用
+  const market = getArg('market', 'domestic');   // domestic | international
 
   const sources = [];
   for (const d of outDates) sources.push({ from: FROM, to: TO, date: d, dir: 'out' });
@@ -186,7 +189,7 @@ const run = journal.begin('flight_query.js', args, { enabled: !hasFlag('no-journ
   log('');
 
   const { flights, meta } = await queryFlights({
-    sources, perTransfer, chunk, log, cache: CACHE, journal: run,
+    sources, perTransfer, chunk, log, cache: CACHE, journal: run, market,
     refill: !hasFlag('no-refill'),
   });
 
@@ -245,6 +248,11 @@ const run = journal.begin('flight_query.js', args, { enabled: !hasFlag('no-journ
   };
   if (out.length) byDate(out, '去程');
   if (BOTH && ret.length) byDate(ret, '返程');
+  if (!flights.length && market !== 'international') {
+    log('');
+    log('⚠ 全部 0 行。若这是国际/地区航线（港澳台、日韩、东南亚、欧美等），');
+    log('  加 --market international 重查：market 默认 domestic，国际航线用 domestic 查不到报价。');
+  }
 
   // ── 输出 ──
   const payload = BOTH ? { out, ret } : out;

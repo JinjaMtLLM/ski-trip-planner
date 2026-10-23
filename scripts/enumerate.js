@@ -76,6 +76,7 @@ const slim = (p) => p.legs.map((g) => ({
   stop: g.stopMinutes || 0,
   seg: g.seg || 1,
   km: g.km || null,          // 打车/接驳的里程，hover 里要标出来
+  label: g.label || null,    // 车种标签（「特急 33km」），路径表里给 cls + km 时才有
   note: g.note || '',
 }));
 
@@ -83,8 +84,12 @@ const slim = (p) => p.legs.map((g) => ({
 const t0 = Date.now();
 const adj = G.buildGraph(legs);
 
-const outRaw = G.dfsPaths(adj, ORIGIN, RESORT, { maxLegs: 5, minDep: WIN_FROM, maxDep: WIN_TO });
-const retRaw = G.dfsPaths(adj, RESORT, ORIGIN, { maxLegs: 5, minDep: WIN_FROM, maxDep: WIN_TO })
+// 单节点最长候车，默认不限。只在路径表里有很多「班期边」（高铁时刻表）时才需要设，
+// 否则 DFS 会把「在车站干等两天」也算成一条路径。日本案例把电车改成即到即走估算后，
+// 返程必然要在机场等好几天（那几天就是滑雪日），设了反而会把整批返程砍光。
+const MAX_GAP = P.maxGapMinutes == null ? Infinity : P.maxGapMinutes;
+const outRaw = G.dfsPaths(adj, ORIGIN, RESORT, { maxLegs: 5, minDep: WIN_FROM, maxDep: WIN_TO, maxGapMin: MAX_GAP });
+const retRaw = G.dfsPaths(adj, RESORT, ORIGIN, { maxLegs: 5, minDep: WIN_FROM, maxDep: WIN_TO, maxGapMin: MAX_GAP })
   .map((p) => G.retimeReturn(p.slice()));
 
 // ---------------------------------------------------------------- 2. 剪枝
@@ -123,9 +128,11 @@ for (const o of outs) {
       }
     }
 
-    const transport = o.cost + r.cost;
-    const lodge = resortN * LODGE_R + hotelN * LODGE_T;
-    const total = transport + lodge;
+    // 逐段票价可能带一位小数（日元折算），累加会攒出 5435.799999999999 这种尾巴
+    const r1 = (v) => Math.round(v * 10) / 10;
+    const transport = r1(o.cost + r.cost);
+    const lodge = r1(resortN * LODGE_R + hotelN * LODGE_T);
+    const total = r1(transport + lodge);
     const days = h.hEff / SESSION_H;
 
     // 纯「元/雪日」排序会漏掉「便宜但难受」的坑，单独打标
@@ -186,7 +193,20 @@ const top = {};
 // 档位来自数据本身：组合里出现过的年假天数全部保留，每档各取前 TOP 名（默认 30）。
 // 这样用户不必事先猜「我最多能请几天」，也不会因为配置写窄了而丢掉整档结果。
 const BUCKETS = Array.from(new Set(itineraries.map((x) => x.leave))).sort((a, b) => a - b);
-for (const b of BUCKETS) top[b] = itineraries.filter((x) => x.leave === b).slice(0, TOP);
+// 并列去重：同一档里「去程一样、到场一样、总价与雪时也一样，只是返程晚了半小时」的条目
+// 会成串占据前排（离场 16:00 / 17:00 / 18:00 三连），把真正不同的方案挤下去。
+// 这类并列保留离场最晚的一条——同价同雪时，留的余量最大。
+const tieKey = (x) => [x.leave, x.outRefs.join('+'), x.arriveResort, x.total, x.hEff,
+  x.resortN, x.hotelN].join('|');
+for (const b of BUCKETS) {
+  const seen = new Map();
+  for (const it of itineraries.filter((x) => x.leave === b)) {
+    const k = tieKey(it);
+    const prev = seen.get(k);
+    if (!prev || it.leaveResort > prev.leaveResort) seen.set(k, it);
+  }
+  top[b] = [...seen.values()].sort((a, c) => a.perDay - c.perDay || a.total - c.total).slice(0, TOP);
+}
 
 fs.writeFileSync(path.join(OUTDIR, 'top.json'), JSON.stringify({
   buckets: BUCKETS,

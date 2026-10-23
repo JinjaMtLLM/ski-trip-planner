@@ -79,6 +79,9 @@ const fmtKm = (v) => (v == null || !isFinite(v) ? '' : (Math.round(v * 10) / 10)
 
 /** 一段路在 hover 里的班次列：航班显示航班号，高铁显示车次，打车/接驳显示方式 + 里程 */
 const tagCol = (g) => {
+  // 路径表给了车种标签（「特急 33km」「新干线 222km」）就用它——比「高铁/雪场接驳」这种
+  // 方式名具体得多，里程也一眼可见。
+  if (g.label) return g.label;
   if (g.mode === 'flight' || g.mode === 'rail') return g.ref || MODE_CN[g.mode];
   const km = fmtKm(kmOf(g));
   return (MODE_CN[g.mode] || g.mode) + (km ? ' ' + km : '');
@@ -113,10 +116,15 @@ const TRANSIT_PRICE = Number(cfg.params.lodgingTransit || 0);
 /** 费用明细：逐段票价 + 两类住宿 + 合计 */
 function costRows(it) {
   const rows = [];
+  // 具体车次/服务名放第二列；通用占位名（雪场接驳 / 打车）没有信息量，留空
+  const svc = (g) => {
+    const r = g.ref || '';
+    return (r === '雪场接驳' || r === '打车' || r === '接驳') ? '' : r;
+  };
   const add = (dir, list) => {
     for (const g of list || []) {
-      rows.push([dir + ' ' + (MODE_CN[g.mode] || g.mode) + ' ' + tagOf(g.from) + '-' + tagOf(g.to),
-        (g.mode === 'flight' || g.mode === 'rail') ? (g.ref || '') : '',
+      rows.push([dir + ' ' + (g.label || MODE_CN[g.mode] || g.mode) + ' ' + tagOf(g.from) + '-' + tagOf(g.to),
+        svc(g),
         '￥' + (g.cost || 0)]);
     }
   };
@@ -124,7 +132,7 @@ function costRows(it) {
   add('返程', it.retLegs);
   const airSum = rows.filter((r) => r[0].includes('航班')).reduce((a, r) => a + Number(String(r[2]).replace('￥', '')), 0);
   rows.push(['机票小计', '', '￥' + airSum]);
-  rows.push(['其他交通', '高铁 + 打车 + 接驳', '￥' + (it.transport - airSum)]);
+  rows.push(['地面交通', '电车 / 特急 / 新干线 / 巴士 / 打车', '￥' + (Math.round((it.transport - airSum) * 10) / 10)]);
   rows.push(['交通合计', '', '￥' + it.transport, 'sum']);
   rows.push(['雪场住宿', it.resortN + ' 晚 × ￥' + RES_PRICE, '￥' + it.resortN * RES_PRICE]);
   rows.push(['中转住宿', it.hotelN + ' 晚 × ￥' + TRANSIT_PRICE, '￥' + it.hotelN * TRANSIT_PRICE]);
@@ -187,12 +195,13 @@ function chainHtml(it, which) {
   return out;
 }
 
-/** 次行：班次串联，ZH9101+G1234（打车/接驳没有班次，自然不出现） */
+/** 次行：班次串联，ZH9101+G1234。地面段没有班次号，但有车种标签（「特急 33km」）就照写 */
 function refLine(it, which) {
   const arr = it[which + 'Legs'];
   if (Array.isArray(arr) && arr.length) {
-    const refs = arr.filter((g) => g.mode === 'flight' || g.mode === 'rail').map((g) => g.ref).filter(Boolean);
-    return refs.join('+');
+    return arr
+      .map((g) => (g.mode === 'flight' || g.mode === 'rail' ? (g.label || g.ref) : (g.label || '')))
+      .filter(Boolean).join('+');
   }
   return String(it[which + 'Route'] || '').split(' | ')
     .map((seg) => (/\u6253\u8f66|\u63a5\u9a73/.test(seg) ? '' : (seg.split(/\s+/)[1] || '')))

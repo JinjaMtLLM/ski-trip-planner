@@ -220,8 +220,9 @@ const esc = (s) => String(s).replace(/'/g, "''");
  *      （同一航班挂 CZ/MF/KN 多个号），对枚举毫无价值，却会把 200 行上限吃光。
  *      只留最便宜的那条，北京这种干线两天并查才不会触发截断。
  */
-function buildSql(sources, perTransfer) {
+function buildSql(sources, perTransfer, market) {
   const limit = Math.max(1, Math.min(200, Number(perTransfer) || 15));
+  const fallbackMarket = market === 'international' ? 'international' : 'domestic';
   const union = sources.map((s) => {
     const tag = `${s.date}|${s.from}-${s.to}`;
     // 机场代码藏在 legs[1].segments[] 里，必须显式取出来：
@@ -237,7 +238,7 @@ function buildSql(sources, perTransfer) {
          o.legs[1].segments[len(o.legs[1].segments)].arr_airport_name AS arr_ap_name,
          o.legs[1].duration_min                                     AS dur_min
   FROM flights(
-    market := 'domestic',
+    market := '${esc(s.market || fallbackMarket)}',
     legs := [{'dep_city':'${esc(s.from)}','arr_city':'${esc(s.to)}','date':'${esc(s.date)}'}],
     cabin := '${esc(s.cabin || 'economy')}'
   ) AS o
@@ -307,7 +308,14 @@ function toFlight(row, src) {
   if (row.arr_ap) { f.arrAp = String(row.arr_ap).toUpperCase(); f.arrApName = row.arr_ap_name || ''; }
   if (typeof row.dur_min === 'number') f.durMin = row.dur_min;
 
-  const tax = (Number(row.adult_construction_fee) || 0) + (Number(row.adult_fuel) || 0);
+  // 税费：优先用实际机建 + 燃油；国际航线这两个字段常缺失（fuel 记 0），
+  // 但 adult_total 是含税总价，差额就是税费——不补这一步会把税费当 0。
+  let tax = (Number(row.adult_construction_fee) || 0) + (Number(row.adult_fuel) || 0);
+  if (!tax) {
+    const total = Number(row.adult_total);
+    const fare = Number(row.adult_fare);
+    if (Number.isFinite(total) && Number.isFinite(fare) && total > fare) tax = total - fare;
+  }
   if (tax > 0) f.tax = tax;                       // 实际机建 + 燃油，planner 优先用它
   if (typeof row.seats === 'number') f.seats = row.seats;
   if (typeof p.stopMinutes === 'number') f.stopMinutes = p.stopMinutes;
@@ -458,7 +466,7 @@ async function queryFlights(opts) {
 
   /** 跑一个批次：调接口（带缓存）→ 记运行记录 → 解析成航班对象 */
   async function runBatch(batch, label) {
-    const sql = buildSql(batch, perTransfer);
+    const sql = buildSql(batch, perTransfer, opts.market);
     const od = batch[0].from + '→' + batch[0].to;
     const dates = batch.map((b) => b.date);
     const short = dates.map((d) => d.slice(5)).join(' ');

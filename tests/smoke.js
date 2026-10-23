@@ -645,6 +645,101 @@ function fakeCall(truncatedOnFirstCall) {
     assert.strictEqual(noRefill.meta.refills, 0);
   });
 
+  // ── 7. 日本电车口径：特急 / 普通两档，按首末班窗口即到即走 ──────────
+  console.log('\n铁路接驳（估算口径）');
+
+  const onDemand = (from, to, o) => ({
+    mode: 'rail', from, to, ref: o.ref || '列车',
+    depAbs: null, arrAbs: null,
+    durMin: o.durMin, waitMin: o.waitMin || 0, cost: o.cost || 0,
+    entryMin: 0, exitMin: 0, scheduled: false,
+    serviceFrom: o.serviceFrom == null ? null : o.serviceFrom,
+    serviceTo: o.serviceTo == null ? null : o.serviceTo,
+  });
+  const oneHop = (legs, h, m) => G.dfsPaths(G.buildGraph(legs), 'A', 'B',
+    { maxLegs: 2, minDep: at('2026-12-05', h || 0, m || 0) });
+
+  check('服务窗内：即到即走 + 平均候车', () => {
+    const r = oneHop([onDemand('A', 'B', { durMin: 45, waitMin: 30, serviceFrom: 420, serviceTo: 1260 })], 8, 0);
+    assert.strictEqual(r.length, 1);
+    assert.strictEqual(r[0][0].dep, at('2026-12-05', 8, 0), '应原样从 08:00 出发');
+    assert.strictEqual(r[0][0].arr, at('2026-12-05', 9, 15), '08:00 + 候车 30 + 车程 45');
+  });
+
+  check('末班之后：顺延到次日首班', () => {
+    const late = oneHop([onDemand('A', 'B', { durMin: 45, waitMin: 30, serviceFrom: 420, serviceTo: 1260 })], 23, 0);
+    assert.strictEqual(late[0][0].dep, at('2026-12-06', 6, 30), '23:00 已收班，应等次日首班 07:00（提前 30 分候车）');
+    assert.strictEqual(late[0][0].arr, at('2026-12-06', 7, 45), '次日 07:00 发车 + 45 分');
+  });
+
+  check('首班之前：等当日首班', () => {
+    const early = oneHop([onDemand('A', 'B', { durMin: 45, waitMin: 30, serviceFrom: 420, serviceTo: 1260 })], 4, 0);
+    assert.strictEqual(early[0][0].dep, at('2026-12-05', 6, 30), '04:00 到站，首班 07:00，等待 30 分');
+  });
+
+  check('雪季开板前不算雪时', () => {
+    const R = Object.assign({}, RES, { seasonStart: '2026-12-05', seasonEnd: '2027-05-05' });
+    const before = G.snowHours(at('2026-12-04', 8, 0), at('2026-12-04', 16, 30), R);
+    assert.strictEqual(before.hEff, 0, '开板前一天应为 0，实际 ' + before.hEff);
+    const onDay = G.snowHours(at('2026-12-05', 8, 0), at('2026-12-05', 16, 30), R);
+    assert.ok(onDay.hEff > 7, '开板当天应满算，实际 ' + onDay.hEff);
+  });
+
+  check('国际航线：market 默认 domestic，显式传 international 才进 SQL', () => {
+    const dom = vf.buildSql([{ from: 'HKG', to: 'TYO', date: '2026-12-04' }], 15);
+    assert.ok(/market := 'domestic'/.test(dom), '默认应为 domestic');
+    const intl = vf.buildSql([{ from: 'HKG', to: 'TYO', date: '2026-12-04' }], 15, 'international');
+    assert.ok(/market := 'international'/.test(intl), '传了 international 应写进 SQL');
+  });
+
+  check('国际航线税费：机建燃油缺失时用 含税总价 - 票面价 兜底', () => {
+    const row = {
+      summary: '香港-东京，大湾区航空 HB320，2026-12-04 09:05:00 出发、2026-12-04 14:10:00 到达，直飞，'
+        + '总耗时 4 小时 5 分钟，成人票面价 CNY 641，余票 9 张。',
+      flight_nos: ['HB320'], adult_fare: 641, adult_total: 1234, adult_fuel: 0,
+      transfers: 0, dep_ap: 'HKG', arr_ap: 'NRT', dur_min: 245,
+    };
+    const f = vf.toFlight(row, { from: 'HKG', to: 'TYO', date: '2026-12-04' });
+    assert.strictEqual(f.tax, 593, '税费应为 1234 - 641，实际 ' + f.tax);
+    assert.strictEqual(f.price, 641, 'price 仍是裸票价');
+  });
+
+  check('地面段的车种标签：特急 / 电车 / 新干线 + 里程（双向都要带）', () => {
+    const dir = path.join(TMP, 'label');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'network.json'), JSON.stringify({
+      schema: 1,
+      nodes: {
+        A: { name: 'A', short: 'A', kind: 'airport' },
+        B: { name: 'B', short: 'B', kind: 'rail' },
+        R: { name: 'R', short: 'R', kind: 'resort' },
+      },
+      modeDefaults: { rail: { entryMin: 15, exitMin: 5 } },
+      ground: [
+        { from: 'A', to: 'B', mode: 'rail', cls: '特急', service: 'X', min: 45, waitMin: 30,
+          cost: 57.9, km: 33, serviceFrom: 420, serviceTo: 1260, note: 'n' },
+        { from: 'B', to: 'R', mode: 'shuttle', cls: '巴士', service: 'Y', min: 40, waitMin: 20,
+          cost: 50, km: 18, serviceFrom: 420, serviceTo: 1200, note: 'n' },
+      ],
+      rail: [], cityCodes: [], airportOfAirline: { default: 'A' },
+    }), 'utf8');
+    const built = LK.buildLegs({
+      origin: 'A', resort: 'R', networkFile: './network.json',
+      dates: { from: '2026-12-05', to: '2026-12-05' }, flightQueries: [],
+      params: {
+        lodgingResort: 1, lodgingTransit: 1,
+        leave: { dayStart: '09:00', halfDayAt: '14:30', dayEnd: '20:30' }, leaveDays: 0,
+        resort: { name: 'R', dayOpen: '08:30', dayClose: '16:00' },
+      },
+    }, { baseDir: dir, cacheDir: path.join(dir, 'c') });
+    const by = (f, t) => built.legs.find((l) => l.from === f && l.to === t);
+    assert.strictEqual(by('A', 'B').label, '特急 33km', '去程标签不对：' + by('A', 'B').label);
+    assert.strictEqual(by('B', 'A').label, '特急 33km', '反向边也要带标签');
+    assert.strictEqual(by('B', 'R').label, '巴士 18km', '巴士标签不对');
+    assert.strictEqual(by('A', 'B').ref, 'X', '具体车次仍留在 ref，供 hover 明细用');
+    assert.strictEqual(by('A', 'B').serviceFrom, 420, '首末班窗口要传到边上');
+  });
+
   fs.rmSync(TMP, { recursive: true, force: true });
   console.log(process.exitCode ? '\n失败' : '\n全部通过（' + pass + ' 项）');
 })();

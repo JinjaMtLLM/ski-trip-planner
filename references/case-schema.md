@@ -44,11 +44,13 @@
 | `dataAsOf` / `notes` | 否 | 报告「数据时效」日期与案例专属备注（HTML 片段数组），写在报告的「口径与已知局限」里 |
 | `dates` | 是 | 时间窗，高铁时刻表按这个范围逐日展开 |
 | `flightQueries[]` | 是 | 要读缓存的航线。单日写 `date`，多日合并查过写 `dates` |
-| `params.resort` | 是 | 雪场营业时间。夜场不开放就删掉 `nightOpen` |
+| `params.resort` | 是 | 雪场营业时间。夜场不开放就删掉 `nightOpen`。另可写 `seasonStart` / `seasonEnd`（`YYYY-MM-DD`）：雪季未开板的日子一律不算雪时——日本雪场常分区开板，不写会把「开板前落地」算成一整天 |
 | `params.leave` | 是 | 三个时刻，顺序必须 `dayStart < halfDayAt < dayEnd` |
 | `params.lodgingResort` / `lodgingTransit` | 是 | 雪场每晚 / 中转城市每晚。中转价按当地实际填，别照抄雪场价 |
 | `params.leaveDays` | 是 | 用户最多请几天，**只**决定航班查询窗口（周末 ± (天数+1)），不筛组合 |
 | `params.perTransfer` / `maxStopMinutes` / `terminalWaitFreeMin` / `nightBoundary` | 否 | 默认 15 / 480 / 240 / `03:00`，见 `enumeration.md` 的口径表 |
+| `params.market` | 否 | `domestic`（默认）/ `international`。港澳台、日韩、东南亚、欧美航线必须写 `international`，否则查询返回 0 行 |
+| `params.maxGapMinutes` | 否 | 单节点最长候车，默认不限。路径表里有大量「班期边」（高铁时刻表）时才设（如 1200）；铁路改即到即走估算后不要设，否则返程会在机场等几天、整批被砍掉 |
 
 **档位不写在这里。** 组合算出来几天就成几档（0 / 0.5 / 1 / 1.5 / 2 …），每档各取前 30，写 `leaveBuckets` 只对 `planner.js` 有效。
 
