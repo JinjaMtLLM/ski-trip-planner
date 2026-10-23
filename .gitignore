@@ -50,3 +50,7 @@ desktop.ini
 # ---- 日志 ----
 *.log
 npm-debug.log*
+
+# ---- 案例本地路径表（含具体票价/时刻，不入库；仓库里只有 network.example.json）----
+references/network.json
+network.json

@@ -1,12 +1,12 @@
 # ski-trip-planner
 
-An agent skill that turns "fly to the airport nearest a ski resort" into a ranked list of trip options, priced as **cost per skiable hour**.
+An agent skill that turns "fly to the airport nearest a ski resort" into a ranked list of trip options, priced as **cost per ski day** (total cost ÷ equivalent ski days).
 
-Given an origin airport, one or more candidate destination airports and a resort, it enumerates every viable outbound × return flight pair, buckets them by **annual leave taken (0 / 0.5 / 1 / 2 days)**, computes how many hours you can actually ski and what the trip costs, then emits a filterable HTML report sorted by cost per ski day.
+Given an origin airport, one or more candidate destination airports and a resort, it builds a graph of every flight, high-speed train and taxi hop, enumerates every viable outbound × return path pair, and **buckets the results by the annual leave each one actually costs** — not by a list you declare up front. It then computes how many hours you can actually ski on snow and what the trip costs, and emits a filterable HTML report sorted by cost per ski day, with a small trend chart across leave buckets.
 
 The interesting part is not the multiplication — it is the time boundaries: landing → arriving at the resort, leaving the resort → boarding, night-session weighting, flights that land after midnight, overnight layovers, taxes charged per flight segment. Those decide the ranking.
 
-No resort, airport, date or price is hard-coded. Every number comes from the user and is written into a `config.json`.
+No resort, airport, date or price is hard-coded. Every number comes from the user and is written into a `case.json` (enumeration pipeline) or a `config.json` (manual engine).
 
 ## Requirements
 
@@ -22,7 +22,7 @@ No resort, airport, date or price is hard-coded. Every number comes from the use
 
 The Amap key must be a **Web Service** key with *Geocoding* and *Driving Direction* enabled. Keys are never written to `config.json`, never passed as command-line arguments, and never echoed back in full.
 
-**Variflight is billed per origin→destination city pair, so it is reserved for detailed search.** It must never be used to probe "does this route have flights" or to compare candidate airports — that is what the Wendao key is for, and if you skip it the skill asks *you* to pick the airport rather than quietly spending credits.
+**Variflight is charged once per `tools/call`, so it is reserved for the detailed search.** That is also the reason the script merges every date of one direction into a single call: the split-by-date habit would silently cost 6× more. It must never be used to probe "does this route have flights" or to compare candidate airports — that is what the Wendao key is for, and if you skip it the skill asks *you* to pick the airport rather than quietly spending credits.
 
 **None of the three is a dead end.** You can decline all of them and still get a full report — see [Manual mode](#manual-mode).
 
@@ -72,13 +72,13 @@ Either way the destination folder must be named `ski-trip-planner`, matching `SK
 
 ## Usage
 
-Ask the agent for a ski trip. It runs four steps:
+Ask the agent for a ski trip. It runs five stages:
 
 0. **Credentials** — `doctor.js`, and help set up any missing key.
 1. **Destination and airport** — list the airports around the resort, then rough-screen them in **one** plain-language Ctrip Wendao prompt that returns flight counts, earliest/latest landing, fare ballpark *with total elapsed time*, drive time and resort hours per airport. Take exact drive times from Amap for the shortlist, verify resort hours against the official page, and let *you* pick. Then confirm the trip skeleton.
-2. **Parameters** — date range, lodging budget (resort and layover city priced separately), leave buckets, tax per segment, and the three leave-day cut-off times (work start / noon split / work end, default `08:30` / `14:00` / `20:00`).
-3. **Flights** — `flight_query.js`, one call per weekend and direction; it fans the dates out from the leave bucket, direct and connecting. Raw results are cached on disk, so re-running a failed step costs nothing.
-4. **Report** — `planner.js` produces the HTML.
+2. **Parameters** — date range, lodging budget (resort and layover city priced separately), the maximum number of leave days, tax per segment, and the three leave-day cut-off times (work start / noon split / work end, default `08:30` / `14:00` / `20:00`).
+3. **Flights** — `flight_query.js`, one call per direction; the query window is the weekend ± (max leave days + 1) so that "one extra day turns out cheaper" dates also enter the pool. Raw results are cached on disk, so re-running a failed step costs nothing.
+4. **Enumeration and report** — `legs.js` turns the cached flights plus the static train/taxi timetable into one edge table, `enumerate.js` exhaustively pairs outbound and return paths and buckets the result by the leave each combination really costs, `render.js` draws the HTML.
 
 Scripts can also be run by hand:
 
@@ -89,10 +89,16 @@ node scripts/amap_route.js --from "Some Airport" --to "Some Resort" --from-city 
 # flights for one weekend, both directions, dates fanned out by leave days
 node scripts/flight_query.js --from SZX --to CGQ --weekend 2027-01-08 --leave-days 1 --both --out weekend-0108.json
 
-# flights for one date, direct + connecting, written as a config-ready array
-node scripts/flight_query.js --from SZX --to CGQ --date 2027-01-09 --type both --out out-2027-01-09.json
+# flights for specific dates, direct + connecting, written as a config-ready array
+# keep every date in ONE `--dates` call: credits are charged per call, not per date
+node scripts/flight_query.js --from SZX --to CGQ --dates 2027-01-08,2027-01-09 --type both --out out-0108-0109.json
 
-# compute and render
+# deterministic pipeline: cached flights + static timetable -> edges -> pairs -> report
+node scripts/legs.js case.json --out legs.csv        # also writes legs.json next to it
+node scripts/enumerate.js case.json --legs legs.json --top 30
+node scripts/render.js case.json --top top.json --legs legs.json --out report.html
+
+# small-scale / hand-picked candidates, no cache needed
 node scripts/planner.js config.json --csv
 ```
 
@@ -148,9 +154,13 @@ Disable with `--no-journal` or `SKI_NO_JOURNAL=1`.
 
 | Path | Purpose |
 |---|---|
-| `SKILL.md` | Skill definition and the four-step workflow |
-| `scripts/planner.js` | Enumeration engine + HTML report generator. Purely parameter-driven |
-| `scripts/flight_query.js` | Flight search via the Variflight MCP; fans dates out from the leave bucket, outputs config-shaped `{ out, ret }` |
+| `SKILL.md` | Skill definition and the workflow |
+| `scripts/legs.js` | Edge table builder: cached flights + high-speed-rail timetable + taxi hops, all normalised into directed edges (`legs.csv` for humans, `legs.json` for the enumerator) |
+| `scripts/enumerate.js` | Exhaustive path enumeration: DFS out/back, same-key pruning, Cartesian pairing, per-bucket top N |
+| `scripts/graphcore.js` | Pure algorithm layer the enumerator sits on — snow hours, leave days, night states, DFS, pruning, return retiming. No I/O, so it is unit-testable offline |
+| `scripts/render.js` | Report renderer. Presentation only, no arithmetic |
+| `scripts/planner.js` | Small-scale engine + HTML report for hand-picked candidates. Purely parameter-driven |
+| `scripts/flight_query.js` | Flight search via the Variflight MCP; spreads the query window from the max leave days, outputs config-shaped `{ out, ret }` |
 | `scripts/variflight.js` | Variflight MCP client: JSON-RPC/SSE parsing, SQL builder, date windows, row mapping, cache plumbing |
 | `scripts/cache.js` | Query cache: raw responses on disk keyed by tool + arguments, with freshness window, failure fallback and pruning |
 | `scripts/journal.js` | Run journal: per-run record of commands, step I/O, failing SQL and cache keys, so a broken chain can be repaired without replaying it |
@@ -165,14 +175,16 @@ Disable with `--no-journal` or `SKI_NO_JOURNAL=1`.
 | `references/intake.md` | What to ask, how to offer options, the confirmation card |
 | `references/config-schema.md` | Field-by-field `config.json` reference with a copyable skeleton |
 | `references/manual-flights.md` | Manual mode: what to collect, a runnable example, and the four common mistakes |
-| `references/algorithm.md` | The model: windows, leave-day rules, cost boundaries, sensitivity checks |
+| `references/algorithm.md` | The model: windows, leave-day rules, cost boundaries, sensitivity checks, and how the two engines differ |
+| `references/enumeration.md` | The graph pipeline: data model, five stages, why pruning is safe, known limits |
+| `references/case-schema.md` | `case.json` field reference (input of the enumeration pipeline) |
 
 ## How the numbers are built
 
 - **Skiable time** — the resort's opening hours are intersected with your actual presence, day by day. Day sessions count fully; night sessions are multiplied by a weight (0.5 by default). Nights when the resort does not open night skiing are skipped.
 - **Arrival / departure** — landing + transfer time to the resort; the reverse adds check-in and the drive back before departure.
-- **Leave days** — outbound judged by departure time, return judged by landing time (a late-evening flight or an early-morning arrival can cost zero leave); whole working days in between are counted.
-- **Cost** — fare + tax. Tax is taken from the flight's own construction-fee-plus-fuel figures when the data source provides them; only when it does not does the skill fall back to the per-segment default (a connection is two segments). Plus lodging. Late-night arrivals that land before a set hour are not charged a hotel night.
+- **Leave days** — outbound judged by departure time, return judged by landing time, each split three ways (before the workday starts = 0, before the noon split = 0.5, later = 1), so a late-evening flight or a morning landing can cost zero or half a day; whole working days in between are counted. The total is *computed*, never used as a filter: whatever days fall out become the buckets.
+- **Cost** — fare + tax. Tax is taken from the flight's own construction-fee-plus-fuel figures when the data source provides them; only when it does not does the skill fall back to the per-segment default (a connection is two segments). Plus lodging, decided by sampling where you are at 03:00 each night: at the resort, stuck at an airport/station long enough to need a room, or still in transit (no charge — which is why red-eyes cost nothing extra and need no special rule).
 - **Multiple airports** — each flight may carry a three-letter airport code, shown next to the flight number; transfer time uses the longest drive among the chosen airports.
 - **Drive time provenance** — `destAirport.toResortMinutesSource` records whether the figure is `amap` (measured), `wendao` (estimate) or `user` (stated), and the report subtitle prints it. Wendao's number is a coarse one, so it carries a 30% buffer rather than Amap's 20%.
 
@@ -183,7 +195,7 @@ node tests/smoke.js         # offline regression: leave-day boundaries, ordering
 python tools/package.py     # -> dist/ski-trip-planner.zip, whitelisted files only
 ```
 
-`tests/smoke.js` runs the planner on a synthetic config (fictional airports, no network, no keys) and asserts the things that have broken before: the three leave-day cut-offs, per-day ascending order, and hard failure on a missing field or a swapped cut-off pair. CI runs the same two commands on every push and pull request.
+`tests/smoke.js` is offline and key-free, and asserts the things that have broken before: the leave-day cut-offs on both ends, snow-hour intersection and night weighting, DFS feasibility and return retiming, pruning, credit accounting, and — end to end on a synthetic five-edge graph — that leave buckets come from the data rather than from the declared `leaveDays`, and that the report still leads with the all-buckets table, the headline cards and the trend chart. CI runs the syntax check and the suite on every push and pull request.
 
 The bundler uses the git file list, so `.gitignore` is respected and `.git/` never ends up in the archive. `tools/`, `tests/`, `.github/`, `.gitignore` and this README are dev-only and excluded; every other file must sit under `scripts/` or `references/` to be packaged at all, so local `config.json` files and query dumps can never slip into a release.
 
@@ -193,8 +205,8 @@ The bundler uses the git file list, so `.gitignore` is respected and `.git/` nev
 
 - Fares and schedules come from third-party services as point-in-time snapshots. Prices move, connections get re-timed. Verify every itinerary on the booking page before paying.
 - Only the flight lookup truly needs a key. `planner.js` needs nothing, so a total refusal to configure credentials degrades to [manual mode](#manual-mode) rather than to failure.
-- Flight data comes from the **Variflight MCP** (`c-gw.variflight.com`), which is billed in credits: **100 credits per month**, charged **once per unique origin→destination city pair**, regardless of how many dates you search. `initialize` / `tools/list` are free. A single round-trip weekend therefore costs 2 credits no matter how many leave buckets you enumerate. Because of that pricing it is used **only** for the detailed search step. If you run out, swap the key.
-- The MCP returns at most **200 rows per SQL query** and flags it as `truncated: true`. The query builder ranks rows per direction and per transfer count so one direction can never crowd out the other, but on very dense routes you may still need a smaller `--per-transfer` or `--chunk`.
+- Flight data comes from the **Variflight MCP** (`c-gw.variflight.com`), which is billed in credits: **100 credits per month**, charged **once per `tools/call`** — *not* per city pair and *not* per date (measured against the journal's `credits` field; the old "per unique O-D pair" wording was wrong). Cache hits and failed calls are free. **Merging every date of one direction into a single call is therefore the one and only way to save credits**: six dates queried separately cost 6 credits, merged they cost 1. The script merges by default (`--chunk 0`), so a round-trip weekend costs 2 credits however many leave buckets you enumerate. Because of that pricing it is used **only** for the detailed search step. If you run out, swap the key.
+- The MCP returns at most **200 rows per SQL query** and flags it as `truncated: true`. Rows come back ordered by date, so truncation only drops the *later* dates: the last date present may be half-cut and everything after it is missing. Instead of re-running the whole batch (a new `tools/call`, one more credit), the script locates the cut date and re-queries **only that date onward** — one call per day, zero if cached. On very dense routes a single day can still exceed 200 rows; lower `--per-transfer` rather than splitting dates, since splitting costs credits and does not raise the row cap.
 - Cached responses are point-in-time snapshots, exactly like live ones — a 6-hour-old cache is still a 6-hour-old price. Check `meta.dataAt` before quoting a fare, and prefer `--refresh` right before you book.
 - **Wendao is not a fare source**, but it *is* the only rough-screening source. It is used in one call to compare candidate airports (flight counts, earliest/latest landing, fare ballpark with elapsed time, drive time, resort hours) and optionally once more to confirm that a given flight operates on a given day. Its transfer coverage is roughly 9%, it sometimes misreports flight numbers, it quotes bare fares without taxes, it merges night sessions into day hours, and it is not reproducible (the same prompt can answer differently twice). Nothing from Wendao is written into `config.json`.
 - The Wendao endpoint behind that skill (`externalcallback.ctrip.com/skills/api/crew/skillhub/searchInfo`) is **not publicly documented** and is not a supported public API — its response format can change, it can start demanding new credentials, or it can stop answering entirely. If that happens you lose only the rough-screening step; flight search still works.

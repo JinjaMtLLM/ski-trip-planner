@@ -1,0 +1,117 @@
+{
+ "schema": 1,
+ "note": "路径表结构示例。这里所有机场、车站、雪场、里程、票价、时刻全是虚构的，只用来示范字段形状。真实案例的 network.json 属于本地产物（含具体票价与抓取时刻），请放在案例目录、用 case.json 的 networkFile 指过去，不要提交到仓库。 另：cityCodes 列出会返回城市码而不是机场码的那些码（航司归属不确定时用 airportOfAirline.default 兜底）。",
+ "nodes": {
+  "AAA": {
+   "name": "起点机场",
+   "short": "起点",
+   "kind": "airport",
+   "city": "起点城"
+  },
+  "BBB": {
+   "name": "目的地机场",
+   "short": "目的机场",
+   "kind": "airport",
+   "city": "目的城"
+  },
+  "RRS": {
+   "name": "示例南站",
+   "short": "南站",
+   "kind": "rail",
+   "city": "目的城"
+  },
+  "RESORT": {
+   "name": "示例滑雪场",
+   "short": "雪场",
+   "kind": "resort",
+   "city": "雪镇"
+  }
+ },
+ "modeDefaults": {
+  "flight": {
+   "entryMin": 30,
+   "exitMin": 20
+  },
+  "rail": {
+   "entryMin": 15,
+   "exitMin": 5
+  },
+  "taxi": {
+   "entryMin": 0,
+   "exitMin": 0
+  },
+  "shuttle": {
+   "entryMin": 0,
+   "exitMin": 0
+  }
+ },
+ "airportOfAirline": {
+  "ZZ": "BBB",
+  "default": "BBB"
+ },
+ "ground": [
+  {
+   "from": "BBB",
+   "to": "RESORT",
+   "mode": "taxi",
+   "min": 60,
+   "waitMin": 5,
+   "cost": 200,
+   "km": 50,
+   "note": "目的地机场→雪场 50km"
+  },
+  {
+   "from": "RESORT",
+   "to": "BBB",
+   "mode": "taxi",
+   "min": 60,
+   "waitMin": 5,
+   "cost": 200,
+   "km": 50,
+   "note": "雪场→目的地机场 50km"
+  },
+  {
+   "from": "RRS",
+   "to": "RESORT",
+   "mode": "shuttle",
+   "min": 30,
+   "waitMin": 10,
+   "cost": 0,
+   "km": 20,
+   "note": "示例南站→雪场 20km，雪场接驳"
+  },
+  {
+   "from": "RESORT",
+   "to": "RRS",
+   "mode": "shuttle",
+   "min": 30,
+   "waitMin": 10,
+   "cost": 0,
+   "km": 20,
+   "note": "雪场→示例南站 20km，雪场接驳"
+  }
+ ],
+ "rail": [
+  {
+   "no": "G0001",
+   "from": "BBB",
+   "to": "RRS",
+   "dep": "08:00",
+   "arr": "08:40",
+   "cost": 30,
+   "note": "示例车次，时刻必须按 12306 复核"
+  },
+  {
+   "no": "G0002",
+   "from": "RRS",
+   "to": "BBB",
+   "dep": "18:00",
+   "arr": "18:40",
+   "cost": 30,
+   "note": "示例车次，时刻必须按 12306 复核"
+  }
+ ],
+ "cityCodes": [
+  "CCC"
+ ]
+}

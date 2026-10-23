@@ -1,7 +1,7 @@
 # 手动录入模式：一个 key 都不配也能出结果
 
 用户有权拒绝配置任何 API。这时候**不要停**——`planner.js` 的测算逻辑不依赖任何外部服务，
-只要能把航班和参数填进 `config.json`，照样能算出各请假档位的「元/每小时雪时」排名。
+只要能把航班和参数填进 `config.json`，照样能算出各年假档的「元/雪日」排名。
 
 自动比价拿不到，是唯一真正的损失。
 
@@ -46,7 +46,7 @@ node scripts/doctor.js --manual
 ```json
 {
   "title": "深圳 → 北大湖 滑雪行程性价比",
-  "origin": { "code": "SZX", "name": "深圳宝安" },
+  "origin": { "code": "AAA", "name": "起点机场" },
   "destAirport": {
     "code": "CGQ",
     "name": "长春龙嘉",
@@ -67,9 +67,9 @@ node scripts/doctor.js --manual
     "taxPerSegment": 150,
     "lodgingResort": 400,
     "lodgingTransit": 100,
-    "redEyeArrivalBefore": "05:00",
+    "nightBoundary": "03:00",
     "leave": { "dayStart": "08:30", "halfDayAt": "14:00", "dayEnd": "20:00" },
-    "leaveBuckets": [0, 0.5, 1, 2]
+    "leaveDays": 1
   },
   "scenarios": [
     {

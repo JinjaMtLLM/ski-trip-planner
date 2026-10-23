@@ -90,7 +90,11 @@ const PRE_FLIGHT = needNum(P, 'preFlightMinutes', 'params.preFlightMinutes');
 const TAX_SEG = needNum(P, 'taxPerSegment', 'params.taxPerSegment');
 const LODGE_RESORT = needNum(P, 'lodgingResort', 'params.lodgingResort');
 const LODGE_TRANS = needNum(P, 'lodgingTransit', 'params.lodgingTransit');
-const RED_EYE = hhmm(P.redEyeArrivalBefore || need(P, 'redEyeArrivalBefore', 'params.redEyeArrivalBefore'), 'params.redEyeArrivalBefore');
+// 住宿判定：夜间采样点 + 「多长的中转停留才值得订房」
+// 这两个参数与主流程（enumerate.js / graphcore.js）同名同默认，改一处即可两边同步。
+// redEyeArrivalBefore 已废弃：采样点落在机上时天然记 0，不需要按落地时刻画线。
+const BOUNDARY = hhmm(P.nightBoundary || '03:00', 'params.nightBoundary');
+const FREE_WAIT = P.terminalWaitFreeMin == null ? 240 : Number(P.terminalWaitFreeMin);
 
 // 请假规则：上班时刻 / 半天分界 / 下班时刻，三段各自独立
 const RULE = need(P, 'leave', 'params.leave（含 dayStart / halfDayAt / dayEnd）');
@@ -101,8 +105,9 @@ if (!(DAY_START < HALF_AT && HALF_AT < DAY_END)) {
   die('params.leave 三个时刻需满足 dayStart < halfDayAt < dayEnd（当前 '
     + RULE.dayStart + ' / ' + RULE.halfDayAt + ' / ' + RULE.dayEnd + '）');
 }
-const BUCKETS = need(P, 'leaveBuckets', 'params.leaveBuckets');
-if (!Array.isArray(BUCKETS) || !BUCKETS.length) die('params.leaveBuckets 应为非空数组，如 [0,0.5,1,2]');
+// 档位两种给法：写了 leaveBuckets 就只保留这些档（手工点名的老用法）；
+// 不写就按组合里实际出现的年假天数自动分档 —— 不用事先猜「最多能请几天」。
+const DECLARED_BUCKETS = Array.isArray(P.leaveBuckets) && P.leaveBuckets.length ? P.leaveBuckets : null;
 
 const SOURCE_NOTE = cfg.sourceNote || '';
 
@@ -142,7 +147,10 @@ function outLeave(f) {
 function returnLeave(f) {
   const ad = f.arrDate || f.date;
   if (isWeekend(ad)) return 0;
-  return hhmm(f.arr, 'ret.arr') <= DAY_START ? 0 : 1;
+  const t = hhmm(f.arr, 'ret.arr');
+  if (t <= DAY_START) return 0;
+  if (t <= HALF_AT) return 0.5;
+  return 1;
 }
 function midWorkdays(outD, retArrD) {
   let c = 0;
@@ -175,21 +183,47 @@ function computeTrip(o, r) {
   return { hDay: +(day / 60).toFixed(2), hNight: +(night / 60).toFixed(2), hEff: +eff.toFixed(2) };
 }
 
-// 住宿：总晚数 = 返程落地日 − 出发日；转机过夜按跨日航段判定，红眼落地不计
+// 住宿：每天 03:00 采样，看那一刻人在哪 —— 与 enumerate.js / graphcore.nightStates 同一口径
+//   在雪场        → 雪场晚
+//   在机场/车站久留 → 中转晚（连接航班 + 跨夜 + 停留 ≥ freeWait）
+//   在车上/机上    → 0   （红眼航班因此在机上过夜，不需要「红眼豁免」这种阈值开关）
+//
+// 与主流程的唯一差别：planner 的候选行只有一对起降时刻，看不到经停窗口，
+// 所以「跨夜的连接航班」只能按「停留是否够长」估一晚中转，不能像主流程那样逐段采样。
 function nightsOf(o, r) {
-  const oAd = o.arrDate || o.date;
-  const rAd = r.arrDate || r.date;
-  const total = Math.max(0, dayNum(rAd) - dayNum(o.date));
-  const redEye = (t) => hhmm(t, 'arr') < RED_EYE;
-  const spanOut = Math.max(0, dayNum(oAd) - dayNum(o.date));
-  const spanRet = Math.max(0, dayNum(rAd) - dayNum(r.date));
-  const transOut = redEye(o.arr) ? 0 : spanOut;
-  const transRet = redEye(r.arr) ? 0 : spanRet;
-  // 红眼落地的那一晚是机上过夜，整体不计住宿；不能因 transOut/transRet 归零就并进雪场晚
-  const freeOut = redEye(o.arr) ? spanOut : 0;
-  const freeRet = redEye(r.arr) ? spanRet : 0;
-  const resort = Math.max(0, total - transOut - transRet - freeOut - freeRet);
-  return { total, resort, transOut, transRet, trans: transOut + transRet };
+  const oDepAbs = dayNum(o.date) * 1440 + hhmm(o.dep, 'out.dep');
+  const oArrAbs = dayNum(o.arrDate || o.date) * 1440 + hhmm(o.arr, 'out.arr');
+  const arriveResort = oArrAbs + TO_RESORT;
+  const rDepAbs = dayNum(r.date) * 1440 + hhmm(r.dep, 'ret.dep');
+  const leaveResort = rDepAbs - PRE_FLIGHT - TO_RESORT;
+  const rArrAbs = dayNum(r.arrDate || r.date) * 1440 + hhmm(r.arr, 'ret.arr');
+
+  // 跨夜的连接航班：只可能有一晚在中转地，且要停留够长才值得订房
+  const transNight = (f) => {
+    const dep = dayNum(f.date) * 1440 + hhmm(f.dep, 'dep');
+    const arr = dayNum(f.arrDate || f.date) * 1440 + hhmm(f.arr, 'arr');
+    if (Math.floor(dep / 1440) === Math.floor(arr / 1440)) return null;   // 不跨夜
+    if (segsOf(f) < 2) return null;                                      // 直飞＝在机上
+    if (Number(f.stopMinutes || 0) < FREE_WAIT) return null;              // 短停留＝候机，不订房
+    return { dep, arr };
+  };
+  const transOut = transNight(o);
+  const transRet = transNight(r);
+
+  let resort = 0, trans = 0;
+  let usedOut = false, usedRet = false;
+  for (let d = Math.floor(oDepAbs / 1440); d <= Math.floor(rArrAbs / 1440); d++) {
+    const b = d * 1440 + BOUNDARY;
+    if (b <= oDepAbs || b > rArrAbs) continue;          // 出发前 / 落地后都不住店
+    if (b <= arriveResort) {                            // 去程侧：还没到雪场
+      if (transOut && !usedOut && b > transOut.dep && b < transOut.arr) { trans++; usedOut = true; }
+      continue;                                         // 否则在机上或车上，记 0
+    }
+    if (b < leaveResort) { resort++; continue; }         // 已在雪场、还没离场
+    if (b <= rDepAbs) continue;                          // 雪场→机场的路上
+    if (transRet && !usedRet && b > transRet.dep && b < transRet.arr) { trans++; usedRet = true; }
+  }
+  return { total: resort + trans, resort, trans };
 }
 
 // ---------------------------------------------------------------- 主计算
@@ -202,7 +236,7 @@ function compute(sc) {
     for (const r of rets) {
       if (dayNum(r.date) <= dayNum(o.date)) continue;
       const leave = outLeave(o) + returnLeave(r) + midWorkdays(o.date, r.arrDate || r.date);
-      if (!BUCKETS.includes(leave)) continue;
+      if (DECLARED_BUCKETS && !DECLARED_BUCKETS.includes(leave)) continue;
       const h = computeTrip(o, r);
       if (h.hEff <= 0.05) continue;
       const days = h.hEff / SESSION_H;
@@ -236,6 +270,10 @@ const SC = SCENARIOS.map((s, i) => ({
   label: s.label || '场景 ' + (i + 1),
   rows: compute(s),
 }));
+
+// 呈现哪些档：声明的优先，否则取全部组合里出现过的天数
+const BUCKETS = DECLARED_BUCKETS
+  || Array.from(new Set([].concat.apply([], SC.map((s) => s.rows.map((r) => r.leave))))).sort((a, b) => a - b);
 
 // ---------------------------------------------------------------- 渲染工具
 const badge = (L) => '<span class="badge b' + String(L).replace('.', 'h') + '">' + L + ' 天</span>';
@@ -314,7 +352,7 @@ function maxHourTable() {
     return '<tr><td>' + badge(L) + '</td>' + cells + '</tr>';
   }).join('');
   return '<h2>换个维度：各档「总雪时最长」的方案</h2><table class="cmp"><thead>' + head + '</thead><tbody>' + body + '</tbody></table>'
-    + '<div class="sub" style="margin-top:8px">单位成本最优 ≠ 玩得最久。上表为同一请假档下把雪时榨到极限的方案，通常比「元/日」冠军多滑数小时，代价是票价或住宿更高。</div>';
+    + '<div class="sub" style="margin-top:8px">单位成本最优 ≠ 玩得最久。上表为同一请假档下把雪时榨到极限的方案，通常比「元/日」最优多滑数小时，代价是票价或住宿更高。</div>';
 }
 
 // ---------------------------------------------------------------- HTML
@@ -421,9 +459,9 @@ const html = '<!DOCTYPE html>\n<html lang="zh-CN"><head><meta charset="utf-8">'
   + cmpTable()
   + maxHourTable()
   + '<div class="rule"></div>'
-  + '<div class="flag"><b>请假口径</b>　工作日上班 <b>' + RULE.dayStart + '</b>、半天分界 <b>' + RULE.halfDayAt + '</b>、下班 <b>' + RULE.dayEnd + '</b>。出发端：' + RULE.halfDayAt + ' 前起飞算 <b>1 天</b>，' + RULE.halfDayAt + '–' + RULE.dayEnd + ' 算 <b>0.5 天</b>，' + RULE.dayEnd + ' 后起飞算 <b>0 天</b>；返程端：' + RULE.dayStart + ' 前落地算 <b>0 天</b>，之后落地算 <b>1 天</b>。中途跨越的工作日整天计入。中转按「第一段起飞 / 末段落地」判定。</div>'
+  + '<div class="flag"><b>请假口径</b>　工作日上班 <b>' + RULE.dayStart + '</b>、半天分界 <b>' + RULE.halfDayAt + '</b>、下班 <b>' + RULE.dayEnd + '</b>。出发端：' + RULE.halfDayAt + ' 前起飞算 <b>1 天</b>，' + RULE.halfDayAt + '–' + RULE.dayEnd + ' 算 <b>0.5 天</b>，' + RULE.dayEnd + ' 后起飞算 <b>0 天</b>；返程端：' + RULE.dayStart + ' 前落地算 <b>0 天</b>，' + RULE.dayStart + '–' + RULE.halfDayAt + ' 落地算 <b>0.5 天</b>，之后落地算 <b>1 天</b>。中途跨越的工作日整天计入。中转按「第一段起飞 / 末段落地」判定。</div>'
   + '<div class="flag"><b>税费口径</b>　机场建设费与燃油附加费<b>按航段各收一次</b>，本表按 ¥' + TAX_SEG + '/段计算。直飞单程 1 段，中转单程 2 段，往返翻倍。燃油附加费随油价每月调整，下单前请以出票页含税总价为准。</div>'
-  + '<div class="flag"><b>住宿口径</b>　雪场 ¥' + LODGE_RESORT + '/晚、转机 ¥' + LODGE_TRANS + '/晚。<b>红眼航班（' + P.redEyeArrivalBefore + ' 前落地）不计住宿</b>，因其在机上过夜。住宿金额 = 雪场晚 × ' + LODGE_RESORT + ' + 转机晚 × ' + LODGE_TRANS + '，故可能大于「雪场晚 × ' + LODGE_RESORT + '」。</div>'
+  + '<div class="flag"><b>住宿口径</b>　雪场 ¥' + LODGE_RESORT + '/晚、转机 ¥' + LODGE_TRANS + '/晚。判定方式：<b>每天 ' + (P.nightBoundary || '03:00') + ' 采样一次，看那一刻人在哪</b>——在雪场记雪场晚，在中转机场/车站久留（停留 ≥ ' + FREE_WAIT + ' 分钟）记转机晚，在车上或机上记 0，所以红眼航班天然不收住宿。住宿金额 = 雪场晚 × ' + LODGE_RESORT + ' + 转机晚 × ' + LODGE_TRANS + '。</div>'
   + '<div class="warn"><b>数据需复核。</b>航班时刻与票价来自单次查询快照，价格实时浮动；中转方案可能由多次查询拼接，存在航班号、时刻或价格不成立的情况。下单前请逐条在出票渠道核实。</div>'
   + '<h2>计算口径与假设</h2>'
   + '<div class="notes"><ul>'

@@ -6,14 +6,21 @@
  * 只用于**详细检索**（第 3 步）：给定日期窗口，拿全量候选与含税票价。
  * 不要拿它做机场粗筛/预查——按城市对扣积分，粗筛一律走携程问道或让用户手选。
  *
- * 计费模型（实测）：
- *   - 搜索 flights(...)：1 积分 / 唯一「出发城市→到达城市」O-D 对，日期不重复计费
- *   - 快照 flight_snapshot(...)：1 积分 / 次调用
- *   - initialize / tools/list：免费
+ * 计费模型（实测；journal 里每次调用的 credits 字段可逐条核对）：
+ *   - getFlightTicketPrice：**1 积分 / 次 tools/call**，与 SQL 里塞了几个日期无关。
+ *     所以唯一有效的省分手段是「把同一方向的全部日期合并进一次调用」：
+ *     2 天拆两次 = 2 分，合并一次 = 1 分。
+ *   - 同一 (工具, 参数) 命中本地缓存：0 分。
+ *   - 失败调用（401 / 工具返回 ERROR）：0 分。
+ *   - initialize / tools/list：免费。
  *
  * 硬约束（实测）：
- *   - SQL 输出上限 200 行，超了 truncated: true 且会静默丢数据
- *   - 同一 O-D 的多个日期必须放进同一次调用，拆开查会重复计费
+ *   - SQL 输出上限 200 行，超了 truncated: true 且会静默丢数据。
+ *     结果按 tag（= 日期）排序，所以截断只砍**靠后**的日期：
+ *     最后一个有行的日期可能是半截，它之后的日期整段缺失。
+ *     截断后**不要整体重跑**（那是新的 tools/call，再扣 1 分），
+ *     只补「被砍到的那天起」的日期 —— 见 queryFlights 的自动补查逻辑。
+ *   - 同一 O-D 的多个日期必须放进同一次调用，拆开查会重复计费。
  *
  * key：优先读环境变量 VARIFLIGHT_MCP_KEY；未设置时回退读 agent 的 MCP 配置
  *      里 variflight-mcp 的 Authorization 头（路径解析见 scripts/mcp_json.js）。
@@ -154,7 +161,7 @@ async function callToolCached(name, args, ctx = {}) {
       return { doc: v.doc, cached: true, stale: v.reason !== 'fresh', entry: hit, key };
     }
     if (v.reason === 'stale') log('    ↳ 缓存已过期（' + cache.formatAge(v.age) + '前），重新查询');
-    else if (v.reason === 'incomplete') log('    ↳ 缓存不完整（上次被截断），重新查询；调小 --per-transfer 或 --chunk 才有意义');
+    else if (v.reason === 'incomplete') log('    ↳ 缓存不完整（上次被截断），重新查询；调小 --per-transfer 或加 --type direct 才更可能装得下');
     else if (v.reason === 'failed') log('    ↳ 缓存里只有上次的失败记录，重新查询');
     else if (v.reason === 'corrupt') log('    ↳ 缓存无法解析，重新查询');
   }
@@ -205,20 +212,39 @@ const esc = (s) => String(s).replace(/'/g, "''");
 
 /**
  * 一组同 O-D 的日期 → 一条 SQL。
- * 直飞/经停全留，中转按成人含税价取前 perTransfer 条（分区排名，互不挤占）。
+ *
+ * 三个要点：
+ *   1. 直飞/经停全留，中转按成人含税价取前 perTransfer 条（分区排名，互不挤占）。
+ *   2. 机场代码从 legs[1].segments[] 取出（dep_ap / arr_ap），不再靠航司推断。
+ *   3. **同时刻去重**：同一 (起飞时刻, 到达时刻, 中转次数) 常有 3–5 条代码共享重复
+ *      （同一航班挂 CZ/MF/KN 多个号），对枚举毫无价值，却会把 200 行上限吃光。
+ *      只留最便宜的那条，北京这种干线两天并查才不会触发截断。
  */
 function buildSql(sources, perTransfer) {
   const limit = Math.max(1, Math.min(200, Number(perTransfer) || 15));
   const union = sources.map((s) => {
     const tag = `${s.date}|${s.from}-${s.to}`;
+    // 机场代码藏在 legs[1].segments[] 里，必须显式取出来：
+    //   · 首段 dep_airport  = 出发机场（BJS 会区分 PEK / PKX，不再靠航司猜）
+    //   · 末段 arr_airport  = 最终到达机场（中转方案也是终点机场）
+    // 只取 10 个扁平列时这几个字段会丢，报告里就只能按航司归属反推。
     return `  SELECT '${esc(tag)}' AS tag, o.option_id, o.transfers, o.flight_nos,
          o.adult_fare, o.adult_construction_fee, o.adult_fuel, o.adult_total,
-         o.seats, o.summary
+         o.seats, o.summary,
+         o.legs[1].segments[1].dep_airport                          AS dep_ap,
+         o.legs[1].segments[len(o.legs[1].segments)].arr_airport    AS arr_ap,
+         o.legs[1].segments[1].dep_airport_name                     AS dep_ap_name,
+         o.legs[1].segments[len(o.legs[1].segments)].arr_airport_name AS arr_ap_name,
+         o.legs[1].duration_min                                     AS dur_min
   FROM flights(
     market := 'domestic',
     legs := [{'dep_city':'${esc(s.from)}','arr_city':'${esc(s.to)}','date':'${esc(s.date)}'}],
     cabin := '${esc(s.cabin || 'economy')}'
-  ) AS o`;
+  ) AS o
+  QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY o.legs[1].dep_time, o.legs[1].arr_time, o.transfers
+    ORDER BY o.adult_total NULLS LAST, o.option_id
+  ) = 1`;
   }).join('\n  UNION ALL\n');
 
   return `WITH all_rows AS (
@@ -230,7 +256,8 @@ ${union}
   FROM all_rows
 )
 SELECT tag, option_id, transfers, flight_nos, adult_fare,
-       adult_construction_fee, adult_fuel, adult_total, seats, summary
+       adult_construction_fee, adult_fuel, adult_total, seats, summary,
+       dep_ap, arr_ap, dep_ap_name, arr_ap_name, dur_min
 FROM ranked
 WHERE transfers = 0 OR rn <= ${limit}
 ORDER BY tag, transfers, adult_total NULLS LAST`;
@@ -275,10 +302,17 @@ function toFlight(row, src) {
   };
   if (p.arrDate && p.arrDate !== f.date) f.arrDate = p.arrDate;
 
+  // 真实机场（SQL 里从 legs[1].segments[] 取的），有就用真的，没有才回落到航司推断
+  if (row.dep_ap) { f.depAp = String(row.dep_ap).toUpperCase(); f.depApName = row.dep_ap_name || ''; }
+  if (row.arr_ap) { f.arrAp = String(row.arr_ap).toUpperCase(); f.arrApName = row.arr_ap_name || ''; }
+  if (typeof row.dur_min === 'number') f.durMin = row.dur_min;
+
   const tax = (Number(row.adult_construction_fee) || 0) + (Number(row.adult_fuel) || 0);
   if (tax > 0) f.tax = tax;                       // 实际机建 + 燃油，planner 优先用它
   if (typeof row.seats === 'number') f.seats = row.seats;
   if (typeof p.stopMinutes === 'number') f.stopMinutes = p.stopMinutes;
+  // 方向标记：--both 且去返程日期区间重叠时，靠它区分 out/ret（输出前会被剥掉）
+  if (src && src.dir) f._dir = src.dir;
   return f;
 }
 
@@ -307,23 +341,34 @@ function fridayOf(date) {
 
 /**
  * 请假天数 → 去程 / 返程的日期窗口。
- *   请假 0   去程 周五、周六          返程 周日
- *   请假 0.5 去程 周五、周六          返程 周日、周一
- *   请假 1   去程 周四、周五、周六    返程 周日、周一、周二
- *   请假 2   去程 周三…周六           返程 周日…周三
+ *
+ * 这里的天数**只用来铺查询窗口**，不用来筛结果：窗口开得比周末宽（周末 ± (天数+1)），
+ * 让「多请一天反而更便宜」的日期也在池子里；真正呈现哪些年假档，由枚举后组合里
+ * 实际出现的天数决定（见 enumerate.js）。
+ *
+ *   请假 0   去程 周四…周六（3 天）      返程 周日、周一（2 天）
+ *   请假 0.5 去程 周四…周六（3 天）      返程 周日、周一（2 天）
+ *   请假 1   去程 周三…周六（4 天）      返程 周日…周二（3 天）
+ *   请假 2   去程 周二…周六（5 天）      返程 周日…周三（4 天）
+ *   请假 3   去程 周一…周六（6 天）      返程 周日…周四（5 天）
+ *
+ * 上限 3 天：再往上窗口就有 13 天以上、单次查询必撞 200 行上限，逐日补查
+ * 的积分比一次合并查询多得多，收益（多请两天假）也不成比例。
  */
+const MAX_LEAVE_DAYS = 3;
+
 function leaveWindow(anyDate, leaveDays) {
   const D = Number(leaveDays);
-  if (!Number.isFinite(D) || D < 0 || D > 2) {
-    throw new VariflightError('请假天数需在 0 / 0.5 / 1 / 2 之间，收到 ' + leaveDays, 'arg');
+  if (!Number.isFinite(D) || D < 0 || D > MAX_LEAVE_DAYS) {
+    throw new VariflightError('请假天数需在 0 / 0.5 / 1 / 2 / 3 之间，收到 ' + leaveDays, 'arg');
   }
   const fri = fridayOf(anyDate);
-  const backStart = Math.max(0, Math.floor(D));
-  const outCount = 2 + backStart;                  // 周五、周六 + 往前请的整天
-  const retCount = D === 0 ? 1 : Math.floor(D) + 2;
+  const pad = Math.floor(D) + 1;                   // 周末 ± pad 天
+  const outCount = pad + 2;                        // 周五往前 pad 天 … 周六
+  const retCount = pad + 1;                        // 周日 … 周日往后 pad 天
 
   const out = [];
-  for (let i = 0; i < outCount; i++) out.push(addDays(fri, -backStart + i));
+  for (let i = 0; i < outCount; i++) out.push(addDays(fri, -pad + i));
   const ret = [];
   for (let i = 0; i < retCount; i++) ret.push(addDays(fri, 2 + i));
 
@@ -332,17 +377,52 @@ function leaveWindow(anyDate, leaveDays) {
 
 // ── 主入口 ──────────────────────────────────────────────────────────────
 /**
+ * chunk 归一化。
+ *   0 / 未给 / 非数字  → Infinity，即**该方向的全部日期合并进一次调用**（默认，最省分）
+ *   正整数 n           → 每次最多 n 个日期（只有确认会撞 200 行上限时才需要）
+ */
+function normalizeChunk(chunk) {
+  const n = Number(chunk);
+  if (!Number.isFinite(n) || n <= 0) return Infinity;
+  return Math.max(1, Math.min(50, Math.floor(n)));
+}
+
+/**
+ * 把 (from,to,date) 列表排成调用批次：先按 O-D 分组，组内再按 chunk 切。
+ * 抽出来是为了能在不联网的情况下断言「默认真的只发一次调用」。
+ */
+function planBatches(sources, chunk) {
+  const groups = new Map();
+  for (const s of sources) {
+    const k = s.from + '>' + s.to;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(s);
+  }
+  const limit = normalizeChunk(chunk);
+  const batches = [];
+  for (const [, list] of groups) {
+    for (let i = 0; i < list.length; i += limit) batches.push(list.slice(i, i + limit));
+  }
+  return { groups, batches };
+}
+
+/**
  * 查一批 (from, to, date)。
- * 同一 O-D 的日期合并进同一次调用（省积分）；每次调用最多 chunk 个数据源（防 200 行截断）。
+ *
+ * 默认把同一 O-D 的全部日期合并进**一次**调用（1 积分），只有当返回值
+ * truncated: true 时，才补查「被砍到的那天起」的日期（每天 1 次调用，命中缓存 0 分）。
+ * 这样常见航线 1 分解决问题，只有真正装不下的干线才会多花 1–2 分。
  * 每次调用先过缓存：新鲜且完整的直接复用，不花积分。
  *
  * @param {object} opts
  * @param {Array<{from:string,to:string,date:string,cabin?:string}>} opts.sources
  * @param {number} [opts.perTransfer=15]  每个日期保留的中转条数
- * @param {number} [opts.chunk=3]         每次调用的数据源上限
+ * @param {number} [opts.chunk=0]         每次调用的日期上限；0 = 全部合并（默认）
+ * @param {boolean} [opts.refill=true]    截断后是否自动补查被砍掉的日期
  * @param {{mode?:'auto'|'refresh'|'off', ttlMinutes?:number}} [opts.cache]
  * @param {object} [opts.journal]  运行记录句柄（scripts/journal.js），逐步记录输入输出
  * @param {(msg:string)=>void} [opts.log]
+ * @param {Function} [opts.callTool] 测试注入点：替换掉默认的 callToolCached（离线跑补查逻辑用）
  * @returns {{flights:Array, meta:object}}
  */
 async function queryFlights(opts) {
@@ -350,22 +430,12 @@ async function queryFlights(opts) {
   if (!sources.length) throw new VariflightError('没有可查询的航线日期', 'arg');
 
   const perTransfer = Number(opts.perTransfer) || 15;
-  const chunk = Math.max(1, Math.min(6, Number(opts.chunk) || 3));
+  const refillOn = opts.refill !== false;
   const log = opts.log || (() => {});
   const cacheCfg = opts.cache || {};
+  const callFn = opts.callTool || callToolCached;
 
-  // 按 O-D 分组，组内再按 chunk 切
-  const groups = new Map();
-  for (const s of sources) {
-    const k = s.from + '>' + s.to;
-    if (!groups.has(k)) groups.set(k, []);
-    groups.get(k).push(s);
-  }
-
-  const batches = [];
-  for (const [, list] of groups) {
-    for (let i = 0; i < list.length; i += chunk) batches.push(list.slice(i, i + chunk));
-  }
+  const { groups, batches } = planBatches(sources, opts.chunk);
 
   // 会话按需建立：全部命中缓存时一次网络请求都不发（initialize 免费，但也没必要走）
   let sessionId = null;
@@ -383,18 +453,20 @@ async function queryFlights(opts) {
   let truncated = false;
   let hits = 0;
   let fallbacks = 0;
+  let refills = 0;
+  let liveCalls = 0;                 // 真正打到接口的调用次数 = 实际扣的积分
 
-  for (let i = 0; i < batches.length; i++) {
-    const batch = batches[i];
+  /** 跑一个批次：调接口（带缓存）→ 记运行记录 → 解析成航班对象 */
+  async function runBatch(batch, label) {
     const sql = buildSql(batch, perTransfer);
     const od = batch[0].from + '→' + batch[0].to;
     const dates = batch.map((b) => b.date);
     const short = dates.map((d) => d.slice(5)).join(' ');
-    log(`  [${i + 1}/${batches.length}] ${od} × ${batch.length} 天（${short}）`);
+    log(`  [${label}] ${od} × ${batch.length} 天（${short}）`);
 
     let res;
     try {
-      res = await callToolCached('getFlightTicketPrice', { sql }, {
+      res = await callFn('getFlightTicketPrice', { sql }, {
         cache: cacheCfg, session, label: od + ' ' + short, log,
       });
     } catch (e) {
@@ -410,6 +482,7 @@ async function queryFlights(opts) {
     }
 
     if (res.cached) hits++;
+    else liveCalls++;
     if (res.fallback) fallbacks++;
 
     const data = (res.doc.item && res.doc.item.data) || {};
@@ -433,15 +506,15 @@ async function queryFlights(opts) {
 
     if (data.truncated) {
       truncated = true;
-      log('    ⚠ 返回被截断（truncated: true），后面的日期可能整段没回来');
-      log('      干线航线（京沪广深之间）单日就能到 100+ 行，改用 --chunk 1 让每天单独一批');
-      log('      注意：重跑是一次新的 tools/call，会再扣积分，所以宁可一开始就保守');
+      log('    ⚠ 返回被截断（truncated: true），200 行上限，靠后日期的数据被丢掉');
     }
 
     const byDate = new Map(batch.map((b) => [b.date, b]));
+    const seen = new Map();          // 日期 → 这个日期实际回来几行
     for (const row of data.rows || []) {
       const tag = String(row.tag || '');
       const [date] = tag.split('|');
+      seen.set(date, (seen.get(date) || 0) + 1);
       const src = byDate.get(date) || batch[0];
       const f = toFlight(row, src);
       if (f.dep && f.arr) flights.push(f);
@@ -457,13 +530,39 @@ async function queryFlights(opts) {
       cached: Boolean(res.cached),
       stale: Boolean(res.stale),
       fallback: Boolean(res.fallback),
+      refill: label === '补查',
       dataAt: res.cached && res.entry ? res.entry.createdAt : new Date().toISOString(),
     });
+
+    return { data, res, seen, batch };
   }
 
-  // 积分只算真正打到接口的 O-D 对；命中缓存的那部分是真省下来的
-  const liveOd = new Set(calls.filter((c) => !c.cached).map((c) => c.od));
-  const credits = liveOd.size;
+  for (let i = 0; i < batches.length; i++) {
+    const r = await runBatch(batches[i], `${i + 1}/${batches.length}`);
+
+    // 截断自愈：结果按日期排序，所以最后有行的那天可能是半截，它之后的日期整段没回来。
+    // 只补这一段，不重跑整批 —— 重跑整批既浪费 1 分，结果还是会截断。
+    if (!r.data.truncated || !refillOn || r.batch.length <= 1) continue;
+
+    const present = r.batch.map((b) => b.date).filter((d) => r.seen.has(d));
+    const cut = present.length ? present[present.length - 1] : r.batch[0].date;
+    const from = Math.max(0, r.batch.findIndex((b) => b.date === cut));
+    const need = r.batch.slice(from);
+    if (!need.length) continue;
+
+    log(`    ↳ 自动补查被砍到的 ${need.length} 天（${need.map((b) => b.date.slice(5)).join(' ')}），不重跑整批`);
+    for (const s of need) {
+      refills++;
+      const rr = await runBatch([s], '补查');
+      if (rr.data.truncated) {
+        log('    ⚠ 单日仍然截断：这一天本身超过 200 行');
+        log(`      用 --per-transfer 调小中转条数（当前 ${perTransfer}），或 --type direct 只看直飞`);
+      }
+    }
+  }
+
+  // 积分 = 真正打到接口的调用次数（命中缓存的那部分是真省下来的）
+  const credits = liveCalls;
   const stamps = calls.map((c) => c.dataAt).filter(Boolean).sort();
 
   return {
@@ -473,6 +572,7 @@ async function queryFlights(opts) {
       calls: calls.length,
       rows,
       truncated,
+      refills,
       credits,                       // 本次真实消耗（命中缓存的部分不计）
       odPairs: [...groups.keys()],
       cache: {
@@ -480,7 +580,7 @@ async function queryFlights(opts) {
         mode: cacheCfg.mode || 'auto',
         hits,
         fallbacks,
-        savedCredits: groups.size - credits,
+        savedCredits: calls.length - credits,
       },
       // 这批数据实际是什么时候拿到的；有缓存命中时会早于「现在」，写报告页脚要用它
       dataAt: { oldest: stamps[0] || '', newest: stamps[stamps.length - 1] || '' },
@@ -492,5 +592,6 @@ async function queryFlights(opts) {
 module.exports = {
   ENDPOINT, VariflightError, token, tokenSource, parseBody, rpc, openSession,
   callTool, callToolCached, buildSql, parseSummary, toFlight, dedupe, queryFlights,
+  normalizeChunk, planBatches,
   fridayOf, leaveWindow, addDays, cache,
 };

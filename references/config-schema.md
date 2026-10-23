@@ -53,7 +53,10 @@
     "taxPerSegment": 150,        // 机建 + 燃油，每航段合计
     "lodgingResort": 300,        // 雪场住宿 元/晚
     "lodgingTransit": 80,        // 转机城市过夜 元/晚
-    "redEyeArrivalBefore": "05:00", // 早于此时刻落地视为红眼，不计住宿
+    // 住宿判定改为夜间采样后，这两项与主流程同名同默认，可不写
+    "nightBoundary": "03:00",       // 夜间采样点：这个时刻人在雪场就记雪场晚
+    "terminalWaitFreeMin": 240,     // 中转停留短于此值算候车，不订房
+    // redEyeArrivalBefore 已废弃（采样点落在机上自然记 0）；旧配置里留着不会报错，也不再起作用
 
     // 请假判定：三个时刻各自独立，都必须由用户确认后填入
     "leave": {
@@ -62,8 +65,10 @@
       "dayEnd": "20:00"      // 下班时刻；起飞不早于此值 = 不请假
     },
 
-    // 只保留这些请假档位的组合
-    "leaveBuckets": [0, 0.5, 1, 2]
+    // 用户最多能请几天：**只**决定航班查询窗口（周末 ± (天数+1)），不筛组合。
+    // 报告呈现哪些档由组合里实际出现的年假天数决定。
+    // 若显式写 leaveBuckets，则退化为「只保留这些档」的老行为（planner.js 手工候选时用）。
+    "leaveDays": 1
   },
 
   // ── 场景（每个场景一个 Tab）────────────────────────────────
@@ -129,9 +134,9 @@
     "taxPerSegment": 150,
     "lodgingResort": 300,
     "lodgingTransit": 80,
-    "redEyeArrivalBefore": "05:00",
+    "nightBoundary": "03:00",
     "leave": { "dayStart": "08:30", "halfDayAt": "14:00", "dayEnd": "20:00" },
-    "leaveBuckets": [0, 0.5, 1, 2]
+    "leaveDays": 1
   },
   "scenarios": [
     { "key": "s1", "label": "<...>", "out": [ /* ≥1 条 */ ], "ret": [ /* ≥1 条 */ ] }

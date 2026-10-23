@@ -100,7 +100,7 @@ function hintsFor(err, ctx = {}) {
     out.push('参数问题：检查 --from / --to 是否为 IATA 码，日期是否 YYYY-MM-DD。');
   }
 
-  if (ctx.truncated) out.push('有结果被截断：调小 --per-transfer 或 --chunk 重跑，截断的缓存不会被直接复用。');
+  if (ctx.truncated) out.push('有结果被截断（200 行上限）：调小 --per-transfer，或加 --type direct 只看直飞；脚本默认会自动补查被砍到的日期，不必整体重跑。截断的缓存不会被直接复用。');
 
   if (ctx.cacheMode === 'off') {
     out.push('本次带了 --no-cache，没有缓存可复用；去掉它重跑会写缓存，之后再失败就能兜底。');

@@ -3,33 +3,41 @@
 /**
  * flight_query.js — 航班检索（飞常准 MCP）
  *
- * 三种用法，按日期窗口自动决定查几天：
+ * **省分第一原则：把同一方向的全部日期合并进一次调用。** 飞常准按「次调用」扣分，
+ * 与 SQL 里塞几个日期无关，所以 2 天拆两次 = 2 分，合并一次 = 1 分。
+ * 本脚本默认就把整个窗口压成「每方向 1 次调用」，不需要手动批处理。
+ *
+ * 三种用法：
  *
  *   1) 按请假档位自动铺日期（推荐）
  *      node flight_query.js --from SZX --to CGQ --weekend 2027-01-08 --leave-days 1 --both --out w1.json
- *        请假 1 天 → 去程 周四/周五/周六，返程 周日/周一/周二
+ *        请假 1 天 → 窗口 = 周末 ± 2 天：去程 周三…周六，返程 周日…周二（共 7 天，1 次调用）
  *
- *   2) 显式日期
+ *   2) 显式日期（多天用逗号合并，单天就只写一天）
  *      node flight_query.js --from SZX --to CGQ --dates 2027-01-08,2027-01-09
  *
- *   3) 单日（旧用法）
- *      node flight_query.js --from SZX --to CGQ --date 2027-01-08
+ *   3) 只要某一天：--dates 里写一天即可，没有单独的 --date 参数
+ *      node flight_query.js --from SZX --to CGQ --dates 2027-01-08
  *
  * 选项：
  *   --from <城市或机场三字码>   城市码会覆盖同城所有机场（BJS = PEK+PKX）
  *   --to   <同上>
  *   --weekend <YYYY-MM-DD>     该日期所在周末的任意一天，自动归到周五
- *   --leave-days <0|0.5|1|2>   请假天数，决定去程/返程各铺几天
- *   --dates <a,b,c>            显式日期列表
- *   --date  <YYYY-MM-DD>       单日
+ *   --leave-days <0|0.5|1|2|3>   最多能请几天：只用来铺查询窗口（周末 ± (天数+1)），不筛结果
+ *   --dates <a,b,c>            显式日期列表（多天必须写在一起，这是省分关键）
  *   --both                     同时查返程方向，输出 { out, ret }
  *   --type <both|direct|transfer>  过滤，默认 both
  *   --per-transfer <n>         每个日期保留的中转条数，默认 15
- *   --chunk <n>                每次调用的数据源上限，默认 3（防 200 行截断）
+ *   --chunk <n>                每次调用的日期上限。默认 0 = 全部合并（1 次调用 = 1 积分）；
+ *                              只有单日就会撞 200 行上限的干线航线才需要设成 1
+ *   --no-refill                截断后不自动补查（默认会自动补，只补被砍到的那几天）
  *   --out <file>               写入文件
  *   --raw                      只打印本次调用的元信息（积分、行数、截断、缓存）
  *   --quiet                    不打印进度
  *   --no-journal               不写运行记录（默认每次都写，见下）
+ *
+ * 截断自愈：结果按日期排序，200 行上限只会砍掉靠后的日期。脚本检测到 truncated 后
+ * 只补查「被砍到的那天起」的日期（每天 1 次调用，命中缓存 0 分），不重跑整批。
  *
  * 运行记录（给「脚本出错后手工补救」用）：
  *   每次运行写一份 <缓存目录>/runs/<时间>-<pid>-flight_query.js.json，
@@ -46,12 +54,13 @@
  * 输出：JSON 数组（单方向）或 { out, ret }（--both），字段与 config.json 的航班对象一致。
  *   [{ date, dep, arr, arrDate?, price, tax?, no, tag, seg, seats?, stopMinutes? }, ...]
  *
- * 积分：按唯一「出发城市→到达城市」对计费，与日期数无关；命中缓存的 O-D 对不扣分。
+ * 积分（实测，非文档口径）：**1 积分 / 次 tools/call**，与日期数无关；
+ * 命中缓存的调用 0 分；失败调用 0 分。所以省分的唯一办法是合并，不是拆细。
  */
 
 const fs = require('fs');
 const { tokenSource } = require('./variflight');
-const { queryFlights, leaveWindow, VariflightError } = require('./variflight');
+const { queryFlights, leaveWindow, planBatches, VariflightError } = require('./variflight');
 const journal = require('./journal');
 const mcpJson = require('./mcp_json');
 
@@ -101,7 +110,13 @@ let windowNote = '';
 const WEEKEND = getArg('weekend');
 const LEAVE = getArg('leave-days');
 const DATES = getArg('dates');
-const DATE = getArg('date');
+
+// --date 已移除：它诱导人一天一天地查，而每次调用扣 1 分，拆开就是白花钱。
+if (hasFlag('date')) {
+  die('--date 已移除，改用 --dates（多天写在一起，一次调用只扣 1 积分）',
+    '单日可以这样写：--dates ' + (getArg('date') || 'YYYY-MM-DD')
+    + '\n  多天合并：--dates 2026-11-27,2026-11-28,2026-11-29');
+}
 
 if (WEEKEND || LEAVE !== undefined) {
   if (!WEEKEND) die('用 --leave-days 时必须同时给 --weekend', '例：--weekend 2027-01-08 --leave-days 1');
@@ -112,17 +127,22 @@ if (WEEKEND || LEAVE !== undefined) {
   outDates = w.out;
   retDates = w.ret;
   windowNote = `请假 ${D} 天 → 周五 ${w.friday}；去程 ${w.out.length} 天，返程 ${w.ret.length} 天`;
+  // 窗口一宽（请假 2 天以上），单次合并查询必然撞 200 行上限，补查会按天逐个发调用。
+  // 提前把「分几次查更省」讲清楚，比事后看积分更有效。
+  if (w.out.length + w.ret.length > 8 && !getArg('chunk')) {
+    console.log('  ⚠ 窗口 ' + (w.out.length + w.ret.length) + ' 天，单次查询会撞 200 行上限并触发逐日补查；'
+      + '想稳在 ' + Math.ceil((w.out.length + w.ret.length) / 3) + ' 次调用内可加 --chunk 3');
+  }
 } else if (DATES) {
   outDates = DATES.split(',').map((s) => s.trim()).filter(Boolean);
+  const bad = outDates.filter((d) => !/^\d{4}-\d{2}-\d{2}$/.test(d));
+  if (bad.length) die('--dates 里有非 YYYY-MM-DD 的日期：' + bad.join(', '));
+  outDates = [...new Set(outDates)].sort();
   retDates = outDates.slice();
-  windowNote = `显式日期 ${outDates.length} 天`;
-} else if (DATE) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(DATE)) die('--date 需为 YYYY-MM-DD');
-  outDates = [DATE];
-  retDates = [DATE];
-  windowNote = `单日 ${DATE}`;
+  windowNote = `显式日期 ${outDates.length} 天（合并成 1 次调用）`;
 } else {
-  die('缺少日期：--weekend + --leave-days，或 --dates，或 --date');
+  die('缺少日期：--weekend + --leave-days，或 --dates <YYYY-MM-DD[,YYYY-MM-DD...]>',
+    '多天务必写进同一个 --dates，合并查只扣 1 积分；拆成多次会各扣 1 分。');
 }
 
 const BOTH = hasFlag('both') || Boolean(WEEKEND);
@@ -145,47 +165,54 @@ const run = journal.begin('flight_query.js', args, { enabled: !hasFlag('no-journ
   }
 
   const perTransfer = getArg('per-transfer', 15);
-  const chunk = getArg('chunk', 3);
+  const chunk = getArg('chunk', 0);          // 0 = 该方向的全部日期合并成一次调用
 
   const sources = [];
-  for (const d of outDates) sources.push({ from: FROM, to: TO, date: d });
-  if (BOTH) for (const d of retDates) sources.push({ from: TO, to: FROM, date: d });
+  for (const d of outDates) sources.push({ from: FROM, to: TO, date: d, dir: 'out' });
+  if (BOTH) for (const d of retDates) sources.push({ from: TO, to: FROM, date: d, dir: 'ret' });
 
   run.step('request', {
     input: { FROM, TO, BOTH, outDates, retDates, TYPE, perTransfer, chunk, cache: CACHE },
     output: { sourceCount: sources.length, sources },
   });
 
+  // 按「次调用」预估，不再按 O-D 对 —— 合并后一次调用就是 1 分
+  const planned = planBatches(sources, chunk).batches.length;
   log('航线 ' + FROM + ' ⇄ ' + TO + '　' + windowNote);
-  log('预计消耗 ' + (BOTH ? 2 : 1) + ' 积分（按唯一 O-D 对计费；命中缓存则为 0）');
+  log('预计消耗 ' + planned + ' 积分：' + sources.length + ' 个日期合成 ' + planned + ' 次调用'
+    + '（每次调用扣 1 分，命中缓存则为 0）');
   if (CACHE.mode === 'off') log('缓存已关闭（--no-cache）');
   else if (CACHE.mode === 'refresh') log('强制重查（--refresh），结果将覆盖缓存');
   log('');
 
-  const { flights, meta } = await queryFlights({ sources, perTransfer, chunk, log, cache: CACHE, journal: run });
+  const { flights, meta } = await queryFlights({
+    sources, perTransfer, chunk, log, cache: CACHE, journal: run,
+    refill: !hasFlag('no-refill'),
+  });
 
-  // 按日期归属方向：去程日期归 out，其余归 ret
+  // 按方向归属：优先用查询时打上的 _dir（--both 且去返程日期重叠时唯一可靠的依据），
+  // 没有标记时退回按日期判。_dir 是内部字段，输出前剥掉。
   const outSet = new Set(outDates);
-  const retSet = new Set(retDates);
-  if (BOTH && outDates.some((d) => retSet.has(d))) {
-    die('去程与返程日期重叠，无法按日期区分方向',
-      '用 --weekend + --leave-days 让窗口自动分开，或分两次调用各查一个方向。');
-  }
-  const pick = (f) => (outSet.has(f.date) ? 'out' : 'ret');
+  const pick = (f) => f._dir || (outSet.has(f.date) ? 'out' : 'ret');
+  const stripDir = (list) => list.map(({ _dir, ...rest }) => rest);
 
   const filterType = (list) => list.filter((f) =>
     TYPE === 'both' ? true : TYPE === 'direct' ? f.seg === 1 : f.seg > 1);
 
-  const out = filterType(flights.filter((f) => pick(f) === 'out'));
-  const ret = filterType(flights.filter((f) => pick(f) === 'ret'));
+  const out = stripDir(filterType(flights.filter((f) => pick(f) === 'out')));
+  const ret = stripDir(filterType(flights.filter((f) => pick(f) === 'ret')));
 
   // ── 摘要 ──
   log('');
-  log('实际调用 ' + meta.calls + ' 次，返回 ' + meta.rows + ' 行，去重后 ' + flights.length + ' 条');
-  log('积分消耗约 ' + meta.credits + '（O-D 对：' + meta.odPairs.join(' / ') + '）');
+  log('实际调用 ' + meta.calls + ' 次' + (meta.refills ? '（含自动补查 ' + meta.refills + ' 次）' : '')
+    + '，返回 ' + meta.rows + ' 行，去重后 ' + flights.length + ' 条');
+  log('扣分 ' + meta.credits + '（' + meta.calls + ' 次调用'
+    + (meta.cache.hits ? '，其中 ' + meta.cache.hits + ' 次命中缓存' : '') + '），航线 '
+    + meta.odPairs.join(' / '));
   if (meta.truncated) {
-    log('⚠ 有调用被截断，结果不完整（靠后的日期可能整段缺失）');
-    log('  干线航线请用 --chunk 1 让每天单独一批；重跑会再扣积分，所以宁可在第一次就保守');
+    log('⚠ 有调用撞上 200 行上限');
+    if (!meta.refills) log('  已用 --no-refill 关闭自动补查，靠后日期的数据可能是缺的');
+    else log('  已自动补查被砍到的日期；若仍提示单日截断，说明那天本身就超 200 行');
   }
 
   const c = meta.cache;
@@ -224,6 +251,7 @@ const run = journal.begin('flight_query.js', args, { enabled: !hasFlag('no-journ
   run.step('result', {
     output: {
       out: out.length, ret: ret.length, deduped: flights.length,
+      calls: meta.calls, refills: meta.refills,
       credits: meta.credits, truncated: meta.truncated, cache: meta.cache,
     },
   });
@@ -247,7 +275,7 @@ const run = journal.begin('flight_query.js', args, { enabled: !hasFlag('no-journ
   if (rec && !hasFlag('quiet')) log('运行记录 ' + rec);
 
   if (!out.length && !ret.length) {
-    console.error('\u2716 没有查到航班。检查三字码是否为城市码，或换 --chunk / --per-transfer 重试。');
+    console.error('\u2716 没有查到航班。检查三字码是否为城市码（BJS 而非 PEK），或调小 --per-transfer 重试。');
     process.exit(2);
   }
 })().catch((e) => {
