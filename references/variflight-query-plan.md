@@ -166,7 +166,7 @@ WHERE o.transfers = 0 OR greatest(coalesce(o.legs[1].segments[2].transfer_durati
 
 ## 6. 停留上限取 960 分钟（16 小时），不是 480
 
-`scripts/legs.js` 里 `maxStopMinutes` 默认 **480**，`config.json` 没覆盖它。这个默认值是错的——它把「落地后睡一晚、次日早上到雪场」这一整类方案全部丢掉，而这类方案恰恰是 0 年假/1 年假的核心解法。
+`scripts/legs.js` 的 `maxStopMinutes` **默认已改为 `vf.DEFAULT_MAX_STOP_MIN`（960）**，`case.json` 不写就是 960。早期默认是 480，那是错的——它把「落地后睡一晚、次日早上到雪场」这一整类方案全部丢掉，而这类方案恰恰是 0 年假/1 年假的核心解法。下面是当时用来定这个数的实测，留作依据。
 
 用 12 月去程 198 行（未过滤，等于全量）实测三种上限下每天的**最低价**：
 
@@ -184,7 +184,7 @@ WHERE o.transfers = 0 OR greatest(coalesce(o.legs[1].segments[2].transfer_durati
 **960 与「不限」的差距只有 ¥20**，而 480 要贵 ¥30–290。所以：
 
 - **960 是性价比拐点**，作为硬上限保留（它还能挡掉「停 26 小时」这种明显是数据噪音的行）。
-- 480 必须改掉。落地清单见第 9 节。
+- 480 已经改掉（代码默认 960）。要临时收紧就在 `case.json` 写 `maxStopMinutes`，别再改代码默认值。
 
 ### Pareto 前沿复核（同一份数据）
 

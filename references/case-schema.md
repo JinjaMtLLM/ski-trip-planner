@@ -17,18 +17,20 @@
   ],
   "params": {
     "perTransfer": 15,
-    "maxStopMinutes": 480,
+    "maxStopMinutes": 960,
     "lodgingResort": 300,
     "lodgingTransit": 80,
     "terminalWaitFreeMin": 240,
     "nightBoundary": "03:00",
     "leave": { "dayStart": "08:30", "halfDayAt": "14:00", "dayEnd": "20:00" },
     "leaveDays": 1,
+    "calendar": "CN",
     "resort": {
       "name": "示例滑雪场",
       "dayOpen": "08:30", "dayClose": "16:30",
       "nightOpen": "18:30", "nightClose": "21:30",
-      "nightWeight": 0.5, "nightClosedWeekdays": []
+      "nightWeight": 0.5, "nightClosedWeekdays": [],
+      "minDayH": 3
     }
   }
 }
@@ -45,10 +47,14 @@
 | `dates` | 是 | 时间窗，高铁时刻表按这个范围逐日展开 |
 | `flightQueries[]` | 是 | 要读缓存的航线。单日写 `date`，多日合并查过写 `dates` |
 | `params.resort` | 是 | 雪场营业时间。夜场不开放就删掉 `nightOpen`。另可写 `seasonStart` / `seasonEnd`（`YYYY-MM-DD`）：雪季未开板的日子一律不算雪时——日本雪场常分区开板，不写会把「开板前落地」算成一整天 |
+| `params.resort.minDayH` | 否 | **日场最短可用时长，默认 3 小时**。某一天与日场的交集不足就整天记 0（夜场不受影响）。写 `0` 退回「有一分钟算一分钟」的旧口径。口径见 `algorithm.md` 第三节 |
 | `params.leave` | 是 | 三个时刻，顺序必须 `dayStart < halfDayAt < dayEnd` |
 | `params.lodgingResort` / `lodgingTransit` | 是 | 雪场每晚 / 中转城市每晚。中转价按当地实际填，别照抄雪场价 |
 | `params.leaveDays` | 是 | 用户最多请几天，**只**决定航班查询窗口（周末 ± (天数+1)），不筛组合 |
-| `params.perTransfer` / `maxStopMinutes` / `terminalWaitFreeMin` / `nightBoundary` | 否 | 默认 15 / 480 / 240 / `03:00`，见 `enumeration.md` 的口径表 |
+| `params.perTransfer` / `maxStopMinutes` / `terminalWaitFreeMin` / `nightBoundary` | 否 | 默认 15 / 960 / 240 / `03:00`，见 `enumeration.md` 的口径表 |
+| `params.calendar` | 否 | 写 `"CN"` 启用法定假与调休日历。**不写就只有周六日免假**——元旦、春节这类窗口会多算 1–3 天年假，档位整体错位。已公布年份用官方通知，未公布年份只推元旦 |
+| `params.urcSki` | 否 | 顺路加滑（乌鲁木齐 → 天山/丝绸之路）。不写就完全不影响旧结果，字段与用法见 `SKILL.md` 的「顺路加滑」 |
+| `params.party` | 否 | 出行人数，默认 1。只影响**按车计价**的边（打车/包车，`wholeCar` 整车价 ÷ 人数）；机票、火车按人头卖，不受影响 |
 | `params.market` | 否 | `domestic`（默认）/ `international`。港澳台、日韩、东南亚、欧美航线必须写 `international`，否则查询返回 0 行 |
 | `params.maxGapMinutes` | 否 | 单节点最长候车，默认不限。路径表里有大量「班期边」（高铁时刻表）时才设（如 1200）；铁路改即到即走估算后不要设，否则返程会在机场等几天、整批被砍掉 |
 
