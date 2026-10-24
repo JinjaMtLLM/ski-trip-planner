@@ -447,12 +447,18 @@ function leaveWindow(anyDate, leaveDays) {
     throw new VariflightError('请假天数需在 0 / 0.5 / 1 / 2 / 3 之间，收到 ' + leaveDays, 'arg');
   }
   const fri = fridayOf(anyDate);
-  const pad = Math.floor(D) + 1;                   // 周末 ± pad 天
-  const outCount = pad + 2;                        // 周五往前 pad 天 … 周六
-  const retCount = pad + 1;                        // 周日 … 周日往后 pad 天
+  // 窗口边界 = 「该请假预算真能落地」的最外一天，不留富余。
+  //
+  // 去程：周四出发中间夹一个周五 → 至少 1 天；周三出发夹周四+周五 → 至少 2 天。
+  // 所以请假 N 天最远只能到 周五-N，周三的航班只有用户指明 2 天才该去查。
+  // （报告里仍会出现更高年假档，但那是窗口内组合的附带产物，不是主结果。）
+  const outPad = Math.floor(D);                    // 周五往前 outPad 天 … 周六
+  const retPad = Math.floor(D) + 1;                // 周日 … 周日往后 retPad 天
+  const outCount = outPad + 2;
+  const retCount = retPad + 1;
 
   const out = [];
-  for (let i = 0; i < outCount; i++) out.push(addDays(fri, -pad + i));
+  for (let i = 0; i < outCount; i++) out.push(addDays(fri, -outPad + i));
   const ret = [];
   for (let i = 0; i < retCount; i++) ret.push(addDays(fri, 2 + i));
 

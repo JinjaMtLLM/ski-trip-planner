@@ -546,19 +546,34 @@ check('--chunk 1 才是「一天一次」，且不再被当作默认', () => {
   assert.strictEqual(vf.planBatches(oneWay, 1).batches.length, 6);
 });
 
-check('请假天数只铺查询窗口：周末 ± (天数+1)，不再缩窗口', () => {
+check('查询窗口不留富余：请假 N 天，去程最远只到 周五-N', () => {
+  // 周四出发中间夹一个周五 → 至少 1 天；周三出发夹周四+周五 → 至少 2 天。
+  // 所以周三的航班只有用户指明 2 天才该去查。
   const d0 = vf.leaveWindow('2027-03-05', 0);
-  assert.deepStrictEqual(d0.out, ['2027-03-04', '2027-03-05', '2027-03-06'], '请假 0 去程应为 周四…周六');
+  assert.deepStrictEqual(d0.out, ['2027-03-05', '2027-03-06'], '请假 0 去程应为 周五、周六');
   assert.deepStrictEqual(d0.ret, ['2027-03-07', '2027-03-08'], '请假 0 返程应为 周日、周一');
+
   const d1 = vf.leaveWindow('2027-03-05', 1);
-  assert.deepStrictEqual(d1.out, ['2027-03-03', '2027-03-04', '2027-03-05', '2027-03-06'], '请假 1 去程应为 周三…周六');
+  assert.deepStrictEqual(d1.out, ['2027-03-04', '2027-03-05', '2027-03-06'], '请假 1 去程应为 周四…周六');
   assert.deepStrictEqual(d1.ret, ['2027-03-07', '2027-03-08', '2027-03-09'], '请假 1 返程应为 周日…周二');
+
+  const d2 = vf.leaveWindow('2027-03-05', 2);
+  assert.deepStrictEqual(d2.out, ['2027-03-03', '2027-03-04', '2027-03-05', '2027-03-06'], '请假 2 才轮到 周三');
+  assert.strictEqual(d2.ret.length, 4);
+});
+
+check('去返程日期数始终相等（行预算才能对齐）', () => {
+  for (const d of [0, 0.5, 1, 2, 3]) {
+    const w = vf.leaveWindow('2027-03-05', d);
+    assert.strictEqual(w.out.length, w.ret.length, '请假 ' + d + ' 天 去返程天数应相等');
+    assert.ok(w.out.length <= 5 && w.ret.length <= 5, '单方向不应超过 5 天');
+  }
 });
 
 check('请假上限放宽到 3 天，4 天仍报错', () => {
   const d3 = vf.leaveWindow('2027-03-05', 3);
-  assert.deepStrictEqual(d3.out, ['2027-03-01', '2027-03-02', '2027-03-03', '2027-03-04', '2027-03-05', '2027-03-06'],
-    '请假 3 去程应为 周一…周六');
+  assert.deepStrictEqual(d3.out, ['2027-03-02', '2027-03-03', '2027-03-04', '2027-03-05', '2027-03-06'],
+    '请假 3 去程应为 周二…周六');
   assert.deepStrictEqual(d3.ret, ['2027-03-07', '2027-03-08', '2027-03-09', '2027-03-10', '2027-03-11'],
     '请假 3 返程应为 周日…周四');
   assert.throws(() => vf.leaveWindow('2027-03-05', 4), /0 \/ 0\.5 \/ 1 \/ 2 \/ 3/, '4 天应报错并给出合法取值');

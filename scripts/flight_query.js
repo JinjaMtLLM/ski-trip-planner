@@ -146,7 +146,7 @@ if (WEEKEND || LEAVE !== undefined) {
   if (bad.length) die('--dates 里有非 YYYY-MM-DD 的日期：' + bad.join(', '));
   outDates = [...new Set(outDates)].sort();
   retDates = outDates.slice();
-  windowNote = `显式日期 ${outDates.length} 天（合并成 1 次调用）`;
+  windowNote = `显式日期 ${outDates.length} 天（单方向超过 6 天会自动拆批）`;
 } else {
   die('缺少日期：--weekend + --leave-days，或 --dates <YYYY-MM-DD[,YYYY-MM-DD...]>',
     '多天务必写进同一个 --dates，合并查只扣 1 积分；拆成多次会各扣 1 分。');
