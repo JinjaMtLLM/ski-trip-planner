@@ -54,3 +54,7 @@ npm-debug.log*
 # ---- 案例本地路径表（含具体票价/时刻，不入库；仓库里只有 network.example.json）----
 references/network.json
 network.json
+
+# ---- 算例跑出来的东西（case.json / top.json / legs.json 都带当日票价，不入库）----
+# 想留一份可复现的样本，就把 case.json 脱敏后放进 references/ 当示例。
+cases/
