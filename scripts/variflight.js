@@ -32,6 +32,11 @@ const mcpJson = require('./mcp_json');
 const ENDPOINT = 'https://c-gw.variflight.com/chat_message/mcp/api/legacy';
 const PROTOCOL = '2025-03-26';
 
+// 实测硬上限（见 references/variflight-query-plan.md）
+const MAX_SOURCES_PER_SQL = 6;      // 一次 SQL 最多 6 个航班数据源
+const MAX_ROWS_PER_SQL = 200;       // 输出最多 200 行，超了 truncated:true 且静默丢数据
+const DEFAULT_MAX_STOP_MIN = 960;   // 中转停留上限 16h。480 会砍掉「落地睡一晚」整类最优解
+
 class VariflightError extends Error {
   constructor(message, kind, hint) {
     super(message);
@@ -264,6 +269,74 @@ WHERE transfers = 0 OR rn <= ${limit}
 ORDER BY tag, transfers, adult_total NULLS LAST`;
 }
 
+// ── 按日限额的 SQL（推荐） ──────────────────────────────────────────────
+
+/** 中转停留分钟数：总耗时 − 各航段飞行耗时。
+ *  `segments[i].transfer_duration_min` 文档里有、返回值里恒为 NULL，
+ *  用它过滤会 coalesce(…,0) <= N 恒真 → 静默失效。只能做差。 */
+const STOP_EXPR = `(o.legs[1].duration_min
+             - o.legs[1].segments[1].duration_min
+             - coalesce(o.legs[1].segments[2].duration_min, 0)
+             - coalesce(o.legs[1].segments[3].duration_min, 0))`;
+
+/**
+ * 一组同 O-D 的日期 → 一条「每个日期只留最便宜 N 条」的 SQL。
+ *
+ * 与 buildSql() 的区别（实测决定，见 references/variflight-query-plan.md）：
+ *   1. **不用 CTE、不用窗口函数**。6 个数据源 + 任何窗口函数 CTE 都会
+ *      `MCP tool execution failed`（0.6–0.8s，免费）；扁平 UNION ALL 才成功。
+ *      所以「排名」改成每个分支自己 `GROUP BY` + `ORDER BY` + `LIMIT`。
+ *   2. **限额是「每个日期的总条数」，不是「中转条数」**。旧口径「直飞全留 +
+ *      中转前 15」实测只有 52% 的行预算落在引擎会保留的方案上。
+ *   3. **GROUP BY (起降时刻, 中转次数) 即共享航班合并**：同一时刻挂多家代码的
+ *      航班折叠成一条，`min_by(col, adult_total)` 让航班号/option_id 跟着最低价走。
+ *   4. 顺带用 STOP_EXPR 做 16h 停留硬上限，省下的名额留给真正可用的方案。
+ *
+ * @param {Array<{from,to,date,cabin?,market?}>} sources 同一 O-D 的若干日期
+ * @param {number} perDay       每个日期最多保留几条（3 天 66 / 6 天 33 都 = 198 行）
+ * @param {string} [market]     domestic | international
+ * @param {number} [maxStopMin] 中转停留上限（分钟），0 = 不限
+ */
+function buildSqlPerDay(sources, perDay, market, maxStopMin) {
+  const limit = Math.max(1, Math.min(200, Number(perDay) || 33));
+  const cap = Number(maxStopMin) > 0 ? Math.floor(Number(maxStopMin)) : 0;
+  const fallbackMarket = market === 'international' ? 'international' : 'domestic';
+  const where = cap ? `o.transfers = 0 OR ${STOP_EXPR} <= ${cap}` : 'TRUE';
+
+  const branches = sources.map((s) => {
+    const tag = `${s.date}|${s.from}-${s.to}`;
+    return `(SELECT '${esc(tag)}' AS tag, o.transfers,
+         o.legs[1].dep_time  AS dep, o.legs[1].arr_time AS arr,
+         o.legs[1].duration_min AS dur_min,
+         o.legs[1].segments[1].dep_airport AS dep_ap,
+         o.legs[1].segments[len(o.legs[1].segments)].arr_airport AS arr_ap,
+         min_by(o.legs[1].segments[1].dep_airport_name, o.adult_total) AS dep_ap_name,
+         min_by(o.legs[1].segments[len(o.legs[1].segments)].arr_airport_name, o.adult_total) AS arr_ap_name,
+         min(${STOP_EXPR})                   AS stop_min,
+         min(o.adult_total)                  AS adult_total,
+         min(o.adult_fare)                   AS adult_fare,
+         min(o.adult_construction_fee)       AS adult_construction_fee,
+         min(o.adult_fuel)                   AS adult_fuel,
+         max(o.seats)                        AS seats,
+         min_by(o.option_id,  o.adult_total) AS option_id,
+         min_by(o.flight_nos, o.adult_total) AS flight_nos,
+         min_by(o.summary,    o.adult_total) AS summary
+  FROM flights(
+    market := '${esc(s.market || fallbackMarket)}',
+    legs := [{'dep_city':'${esc(s.from)}','arr_city':'${esc(s.to)}','date':'${esc(s.date)}'}],
+    cabin := '${esc(s.cabin || 'economy')}'
+  ) AS o
+  WHERE ${where}
+  GROUP BY o.legs[1].dep_time, o.legs[1].arr_time, o.transfers, o.legs[1].duration_min,
+           o.legs[1].segments[1].dep_airport,
+           o.legs[1].segments[len(o.legs[1].segments)].arr_airport
+  ORDER BY adult_total NULLS LAST
+  LIMIT ${limit})`;
+  });
+
+  return branches.join('\nUNION ALL\n') + '\nORDER BY tag, adult_total NULLS LAST';
+}
+
 // ── 解析 ────────────────────────────────────────────────────────────────
 const pad = (n) => String(n).padStart(2, '0');
 
@@ -318,7 +391,10 @@ function toFlight(row, src) {
   }
   if (tax > 0) f.tax = tax;                       // 实际机建 + 燃油，planner 优先用它
   if (typeof row.seats === 'number') f.seats = row.seats;
-  if (typeof p.stopMinutes === 'number') f.stopMinutes = p.stopMinutes;
+  // 中转停留：优先用 SQL 的 stop_min（做差算出来的，精确）；
+  // 旧缓存/旧路径没有这一列，才回落到 summary 文本里的「中转停留约 N 分钟」
+  if (typeof row.stop_min === 'number') f.stopMinutes = row.stop_min;
+  else if (typeof p.stopMinutes === 'number') f.stopMinutes = p.stopMinutes;
   // 方向标记：--both 且去返程日期区间重叠时，靠它区分 out/ret（输出前会被剥掉）
   if (src && src.dir) f._dir = src.dir;
   return f;
@@ -386,13 +462,13 @@ function leaveWindow(anyDate, leaveDays) {
 // ── 主入口 ──────────────────────────────────────────────────────────────
 /**
  * chunk 归一化。
- *   0 / 未给 / 非数字  → Infinity，即**该方向的全部日期合并进一次调用**（默认，最省分）
- *   正整数 n           → 每次最多 n 个日期（只有确认会撞 200 行上限时才需要）
+ *   0 / 未给 / 非数字  → 6，即**该方向的日期尽量合并进一次调用**（默认，最省分）
+ *   正整数 n           → 每次最多 n 个日期，但不会超过 6（一次 SQL 最多 6 个数据源）
  */
 function normalizeChunk(chunk) {
   const n = Number(chunk);
-  if (!Number.isFinite(n) || n <= 0) return Infinity;
-  return Math.max(1, Math.min(50, Math.floor(n)));
+  if (!Number.isFinite(n) || n <= 0) return MAX_SOURCES_PER_SQL;
+  return Math.max(1, Math.min(MAX_SOURCES_PER_SQL, Math.floor(n)));
 }
 
 /**
@@ -438,6 +514,10 @@ async function queryFlights(opts) {
   if (!sources.length) throw new VariflightError('没有可查询的航线日期', 'arg');
 
   const perTransfer = Number(opts.perTransfer) || 15;
+  // perDay 一旦给出就走「按日限额」新路径（无 CTE、可 6 源、默认 16h 停留上限）
+  const perDay = Number(opts.perDay) > 0 ? Number(opts.perDay) : 0;
+  const maxStopMinutes = opts.maxStopMinutes === undefined
+    ? DEFAULT_MAX_STOP_MIN : Number(opts.maxStopMinutes) || 0;
   const refillOn = opts.refill !== false;
   const log = opts.log || (() => {});
   const cacheCfg = opts.cache || {};
@@ -466,7 +546,15 @@ async function queryFlights(opts) {
 
   /** 跑一个批次：调接口（带缓存）→ 记运行记录 → 解析成航班对象 */
   async function runBatch(batch, label) {
-    const sql = buildSql(batch, perTransfer, opts.market);
+    const sql = perDay
+      ? buildSqlPerDay(batch, perDay, opts.market, maxStopMinutes)
+      : buildSql(batch, perTransfer, opts.market);
+    // 行预算是「日期数 × 每天条数 ≤ 200」。超了不会报错，只会 truncated + 逐日补查（多扣分），
+    // 所以在发请求之前先提醒一句。
+    if (perDay && batch.length * perDay > MAX_ROWS_PER_SQL) {
+      log(`    ⚠ ${batch.length} 天 × ${perDay} 条 = ${batch.length * perDay} 行，`
+        + `超过 ${MAX_ROWS_PER_SQL} 行上限，会被截断（单方向 3 天配 66、6 天配 33）`);
+    }
     const od = batch[0].from + '→' + batch[0].to;
     const dates = batch.map((b) => b.date);
     const short = dates.map((d) => d.slice(5)).join(' ');
@@ -599,7 +687,8 @@ async function queryFlights(opts) {
 
 module.exports = {
   ENDPOINT, VariflightError, token, tokenSource, parseBody, rpc, openSession,
-  callTool, callToolCached, buildSql, parseSummary, toFlight, dedupe, queryFlights,
-  normalizeChunk, planBatches,
+  callTool, callToolCached, buildSql, buildSqlPerDay, parseSummary, toFlight, dedupe,
+  queryFlights, normalizeChunk, planBatches,
   fridayOf, leaveWindow, addDays, cache,
+  MAX_SOURCES_PER_SQL, MAX_ROWS_PER_SQL, DEFAULT_MAX_STOP_MIN,
 };

@@ -27,11 +27,16 @@
  *   --dates <a,b,c>            显式日期列表（多天必须写在一起，这是省分关键）
  *   --both                     同时查返程方向，输出 { out, ret }
  *   --type <both|direct|transfer>  过滤，默认 both
- *   --per-transfer <n>         每个日期保留的中转条数，默认 15
+ *   --per-day <n>              每个日期最多保留几条（按含税价取最低）。给了就走「按日限额」
+ *                              路径：无 CTE、可 6 源、自动加中转停留上限。**推荐**
+ *                              单周末 3 天 → 66（3×66=198 行）；合并 6 天 → 33（6×33=198 行）
+ *   --max-stop <分钟>          中转停留上限，默认 960（16h），0 = 不限。仅 --per-day 生效
+ *   --per-transfer <n>         旧口径：直飞全留 + 每个日期保留 n 条中转，默认 15。
+ *                              行预算有效率只有 52%，新查询请改用 --per-day
  *   --market <domestic|international>  航线市场，默认 domestic。港澳台/日韩/东南亚等
  *                              国际航线必须写 international，否则返回 0 行
- *   --chunk <n>                每次调用的日期上限。默认 0 = 全部合并（1 次调用 = 1 积分）；
- *                              只有单日就会撞 200 行上限的干线航线才需要设成 1
+ *   --chunk <n>                每次调用的日期上限，默认 0 = 一个方向全并进一次调用
+ *                              （上限 6，超出会自动拆批——一次 SQL 最多 6 个数据源）
  *   --no-refill                截断后不自动补查（默认会自动补，只补被砍到的那几天）
  *   --out <file>               写入文件
  *   --raw                      只打印本次调用的元信息（积分、行数、截断、缓存）
@@ -167,7 +172,18 @@ const run = journal.begin('flight_query.js', args, { enabled: !hasFlag('no-journ
   }
 
   const perTransfer = getArg('per-transfer', 15);
-  const chunk = getArg('chunk', 0);          // 0 = 该方向的全部日期合并成一次调用
+  const perDay = Number(getArg('per-day', 0)) || 0;
+  const maxStop = Number(getArg('max-stop', 960));
+  // 静默回落最危险：写了 --per-day 却没给值，getArg 会退回默认 0，于是悄悄走旧的
+  // --per-transfer 口径，行预算白白浪费。宁可报错。
+  if (hasFlag('per-day') && !(perDay > 0)) {
+    die('--per-day 需要正整数',
+      '单周末 3 天用 66（3×66=198 行），合并 6 天用 33（6×33=198 行）');
+  }
+  if (hasFlag('max-stop') && !(maxStop >= 0)) {
+    die('--max-stop 需要分钟数（0 = 不限）', '默认 960 = 16 小时');
+  }
+  const chunk = getArg('chunk', 0);          // 0 = 该方向的全部日期合并成一次调用（上限 6 源）
   const market = getArg('market', 'domestic');   // domestic | international
 
   const sources = [];
@@ -175,13 +191,17 @@ const run = journal.begin('flight_query.js', args, { enabled: !hasFlag('no-journ
   if (BOTH) for (const d of retDates) sources.push({ from: TO, to: FROM, date: d, dir: 'ret' });
 
   run.step('request', {
-    input: { FROM, TO, BOTH, outDates, retDates, TYPE, perTransfer, chunk, cache: CACHE },
+    input: { FROM, TO, BOTH, outDates, retDates, TYPE, perTransfer, perDay, maxStop, chunk, cache: CACHE },
     output: { sourceCount: sources.length, sources },
   });
 
   // 按「次调用」预估，不再按 O-D 对 —— 合并后一次调用就是 1 分
   const planned = planBatches(sources, chunk).batches.length;
   log('航线 ' + FROM + ' ⇄ ' + TO + '　' + windowNote);
+  if (perDay) {
+    log('取数口径：每个日期最多 ' + perDay + ' 条（按含税价）'
+      + '　停留上限 ' + (Number(maxStop) > 0 ? maxStop + ' 分钟' : '不限'));
+  }
   log('预计消耗 ' + planned + ' 积分：' + sources.length + ' 个日期合成 ' + planned + ' 次调用'
     + '（每次调用扣 1 分，命中缓存则为 0）');
   if (CACHE.mode === 'off') log('缓存已关闭（--no-cache）');
@@ -189,7 +209,7 @@ const run = journal.begin('flight_query.js', args, { enabled: !hasFlag('no-journ
   log('');
 
   const { flights, meta } = await queryFlights({
-    sources, perTransfer, chunk, log, cache: CACHE, journal: run, market,
+    sources, perTransfer, perDay, maxStopMinutes: maxStop, chunk, log, cache: CACHE, journal: run, market,
     refill: !hasFlag('no-refill'),
   });
 

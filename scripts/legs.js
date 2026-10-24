@@ -141,7 +141,11 @@ function flipNote(note) {
 }function readCachedFlights(q, opts) {
   const dates = q.dates && q.dates.length ? q.dates : [q.date];
   const sources = dates.map((d) => ({ from: q.from, to: q.to, date: d }));
-  const sql = vf.buildSql(sources, (opts && opts.perTransfer) || 15, q.market || (opts && opts.market));
+  const perDay = opts && Number(opts.perDay) > 0 ? Number(opts.perDay) : 0;
+  const sql = perDay
+    ? vf.buildSqlPerDay(sources, perDay, q.market || (opts && opts.market),
+      opts.maxStopMinutes === undefined ? vf.DEFAULT_MAX_STOP_MIN : opts.maxStopMinutes)
+    : vf.buildSql(sources, (opts && opts.perTransfer) || 15, q.market || (opts && opts.market));
   const key = cache.keyOf('getFlightTicketPrice', { sql });
   const dir = opts && opts.cacheDir ? path.resolve(opts.cacheDir) : cache.cacheDir();
   if (!dir) return { key, rows: null, reason: 'no-cache-dir' };
@@ -183,7 +187,10 @@ function buildLegs(caseCfg, opts) {
   const o = opts || {};
   const net = loadNetwork(caseCfg.networkFile, caseCfg.resort, o.baseDir);
   airportOf._net = net;
-  const maxStop = caseCfg.params && caseCfg.params.maxStopMinutes ? caseCfg.params.maxStopMinutes : 480;
+  // 中转停留上限默认 960（16h）。480 会把「落地睡一晚、次日早上到雪场」整类方案
+  // 全部丢掉——实测每天贵 ¥30–290。见 references/variflight-query-plan.md 第 6 节。
+  const maxStop = caseCfg.params && caseCfg.params.maxStopMinutes
+    ? caseCfg.params.maxStopMinutes : vf.DEFAULT_MAX_STOP_MIN;
   const modeDef = net.modeDefaults || {};
 
   const legs = [];
@@ -198,6 +205,8 @@ function buildLegs(caseCfg, opts) {
     const r = readCachedFlights(q, {
       ...o,
       perTransfer: caseCfg.params && caseCfg.params.perTransfer,
+      perDay: caseCfg.params && caseCfg.params.perDay,
+      maxStopMinutes: maxStop,
       market: q.market || (caseCfg.params && caseCfg.params.market),
     });
     // 一个 query 可能带 dates[] 而不是单个 date，日志里两种都拼得出来

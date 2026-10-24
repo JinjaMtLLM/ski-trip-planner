@@ -197,10 +197,23 @@ const RES = {
 };
 
 check('雪时 = 窗口与日场交集（同年同日）', () => {
-  const h = G.snowHours(at('2026-11-28', 12, 0), at('2026-11-28', 14, 0), RES);
+  // minDayH 归零：这条只验证「交集」本身，不掺最短可用时长
+  const h = G.snowHours(at('2026-11-28', 12, 0), at('2026-11-28', 14, 0), { ...RES, minDayH: 0 });
   assert.strictEqual(h.hDay, 2);
   assert.strictEqual(h.hNight, 0);
   assert.strictEqual(h.hEff, 2);
+});
+
+check('日场不足 minDayH 的整天记 0（换鞋热身都不够），夜场不受影响', () => {
+  // 默认阈值 2.5h：12:00–14:00 只有 2h，不够 → 0
+  const short = G.snowHours(at('2026-11-28', 12, 0), at('2026-11-28', 14, 0), RES);
+  assert.strictEqual(short.hDay, 0, '2h 日场应记 0');
+  // 同一段窗口若含夜场，夜场照算
+  const night = G.snowHours(at('2026-11-28', 19, 0), at('2026-11-28', 21, 0), RES);
+  assert.strictEqual(night.hNight, 2, '夜场不设最短时长');
+  // 刚好够阈值就保留
+  const ok = G.snowHours(at('2026-11-28', 12, 0), at('2026-11-28', 14, 30), RES);
+  assert.strictEqual(ok.hDay, 2.5, '2.5h 应保留');
 });
 
 check('雪时跨日累计，夜场按权重折算', () => {
@@ -480,6 +493,32 @@ check('同一 (起飞, 到达, 中转次数) 只留最低价，避免代码共�
   const sql = vf.buildSql([{ from: 'SZX', to: 'BJS', date: '2026-11-27' }], 15);
   assert.ok(/QUALIFY ROW_NUMBER\(\)/.test(sql), '缺 QUALIFY 去重');
   assert.ok(/PARTITION BY o\.legs\[1\]\.dep_time, o\.legs\[1\]\.arr_time, o\.transfers/.test(sql), '分区键不对');
+});
+
+check('按日限额 SQL：6 源也不用 CTE / 窗口函数（6 源 + 窗口函数必然 MCP 失败）', () => {
+  const six = days.slice(0, 6).map((d) => ({ from: 'SZX', to: 'CGQ', date: d }));
+  const sql = vf.buildSqlPerDay(six, 33, 'domestic', 960);
+  assert.ok(!/\bWITH\b/.test(sql), '不应出现 CTE');
+  assert.ok(!/OVER\s*\(/.test(sql), '不应出现窗口函数');
+  assert.strictEqual((sql.match(/GROUP BY/g) || []).length, 6, '每个分支各一个 GROUP BY');
+  assert.strictEqual((sql.match(/LIMIT 33/g) || []).length, 6, '每个分支各一个 LIMIT');
+  assert.ok(sql.length < 16000, 'SQL 超 16000 字符会被拒，实际 ' + sql.length);
+});
+
+check('按日限额 SQL：默认带 16h 中转停留上限，0 表示不限', () => {
+  const one = [{ from: 'SZX', to: 'CGQ', date: '2026-12-10' }];
+  assert.ok(/<= 960/.test(vf.buildSqlPerDay(one, 33, 'domestic', 960)), '缺停留上限');
+  assert.ok(/duration_min[\s\S]*segments\[1\]\.duration_min/.test(vf.buildSqlPerDay(one, 33, 'domestic', 960)),
+    '停留应用「总耗时 − 各段飞行」做差，不能用恒 NULL 的 transfer_duration_min');
+  assert.ok(!/transfer_duration_min/.test(vf.buildSqlPerDay(one, 33, 'domestic', 960)),
+    'transfer_duration_min 恒 NULL，用了会静默失效');
+  assert.ok(!/<= 960/.test(vf.buildSqlPerDay(one, 33, 'domestic', 0)), 'maxStop=0 应不限');
+});
+
+check('一次调用最多 6 个数据源，超过自动拆批', () => {
+  const seven = days.slice(0, 6).concat(['2026-12-03']).map((d) => ({ from: 'SZX', to: 'CGQ', date: d }));
+  assert.strictEqual(vf.planBatches(seven, undefined).batches.length, 2, '7 天应拆成 6 + 1');
+  assert.strictEqual(vf.MAX_SOURCES_PER_SQL, 6);
 });
 
 check('toFlight 把真实机场带出来，缺字段时留空交给航司兜底', () => {

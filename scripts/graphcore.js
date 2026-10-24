@@ -68,11 +68,16 @@ function snowWindows(startAbs, endAbs, R) {
   const seasonTo = R.seasonEnd ? dateDay(R.seasonEnd) : Infinity;
   const out = [];
   if (!(endAbs > startAbs)) return out;
+  // 某一天的日场只捞到一小段，实际不可用：换鞋、存包、热身都不止这个时间。
+  // 低于阈值整天记 0（夜场不受影响，夜里上山是另一回事）。默认 2.5h，可用
+  // resort.minDayH 覆盖；写 0 就退回旧口径（有一分钟算一分钟）。
+  const minDayH = R.minDayH == null ? 2.5 : Number(R.minDayH);
+  const minDayMin = minDayH * 60;
   for (let d = dayOf(startAbs); d <= dayOf(endAbs); d++) {
     if (d < seasonFrom || d > seasonTo) continue;
     const segs = [];
     const dA = Math.max(d * DAY + dayOpen, startAbs), dB = Math.min(d * DAY + dayClose, endAbs);
-    if (dB > dA) segs.push([dA, dB, 'day']);
+    if (dB - dA >= minDayMin) segs.push([dA, dB, 'day']);
     if (nightOpen !== null && !closed.has(wdOf(d))) {
       const nA = Math.max(d * DAY + nightOpen, startAbs), nB = Math.min(d * DAY + nightClose, endAbs);
       if (nB > nA) segs.push([nA, nB, 'night']);
@@ -139,6 +144,50 @@ function buildGraph(legs) {
 }
 
 /**
+ * 合并同类接驳：连续两段「同模式的即到即走地面段」在现实里就是一趟车。
+ * 拆成两条边参与搜索，会把「阿勒泰站 → 机场 → 雪场」这种绕行当成一条合法路径，
+ * 而它严格被「站 → 雪场」的直连边支配（多 23km、多 55 分、多 ¥15，雪时还少 0.5h），
+ * 于是每一条正常方案旁边都会长出一个「+¥15 / −0.5h」的双胞胎，把 top30 挤满。
+ *
+ * 规则：
+ *   ① 两段模式相同且都不是班期段 → 合成一段（耗时与代价相加，记 via 说明途经）；
+ *   ② 若网络里本来就有起讫相同的直连地面段，且它既不更慢也不更贵 → 这条链严格被支配，整条丢掉；
+ *   ③ 有服务时间窗的一律不合并（窗口的先后关系不能简单相加）。
+ * 注意「同模式」这个限定很重要：禾木那种「打车到机场 + 机场坐巴士上山」是**不同模式**，
+ * 属于真换乘（巴士只从机场发车），不能被合并掉。
+ * 返回 { merged } 或 { drop: true }。
+ */
+function mergeGround(last, g, arr, adj) {
+  const km = Math.round(((last.km || 0) + (g.km || 0)) * 10) / 10;
+  const via = (last.via || []).concat([last.to]);
+  // 合并后的名字要跟实际模式走，不能写死「打车」——接驳/城际同样可能被合并
+  const cn = { taxi: '打车', shuttle: '雪场接驳', rail: '高铁', flight: '航班' }[last.mode] || last.mode;
+  const merged = {
+    ...last,
+    to: g.to,
+    toName: g.toName,
+    dep: last.dep,
+    arr,
+    durMin: arr - last.dep,
+    waitMin: 0,
+    entryMin: last.entryMin,
+    exitMin: g.exitMin,
+    cost: last.cost + g.cost,
+    wholeCar: (last.wholeCar || 0) + (g.wholeCar || 0),
+    km,
+    via,
+    ref: '合并' + cn,
+    label: '合并' + cn + ' 经' + via.join('+') + (km > 0 ? ' ' + km + 'km' : ''),
+    merged: true,
+  };
+  const direct = (adj.get(last.from) || []).some((e) => e.to === g.to && !e.scheduled
+    && e.mode === merged.mode
+    && (e.durMin + (e.waitMin || 0)) <= merged.durMin + 1e-9
+    && e.cost <= merged.cost + 1e-9);
+  return direct ? { drop: true } : { merged };
+}
+
+/**
  * 从 src 到 dst 枚举所有可行路径。
  * startT = 最早可出发时刻；maxLegs 限制段数（防止绕路），不重复经过节点。
  */
@@ -181,6 +230,21 @@ function dfsPaths(adj, src, dst, opts) {
       if (dep < startT || dep > maxDep) continue;
       // 起点不设候车上限（否则「周三、周六飞」会被当成候车超时全砍掉）
       if (legs.length && dep - t > maxGapMin) continue;
+      const last = legs.length ? legs[legs.length - 1] : null;
+      if (last && !last.scheduled && !g.scheduled && last.mode === g.mode
+        && last.serviceFrom == null && last.serviceTo == null
+        && g.serviceFrom == null && g.serviceTo == null) {
+        const r = mergeGround(last, g, arr, adj);
+        if (r.drop) continue;
+        visited.add(g.to);
+        legs.pop();
+        legs.push(r.merged);
+        walk(g.to, arr + g.exitMin, legs, visited);
+        legs.pop();
+        legs.push(last);
+        visited.delete(g.to);
+        continue;
+      }
       visited.add(g.to);
       legs.push({ ...g, dep, arr });
       walk(g.to, arr + g.exitMin, legs, visited);
