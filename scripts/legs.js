@@ -141,6 +141,8 @@ function flipNote(note) {
 }function readCachedFlights(q, opts) {
   const dates = q.dates && q.dates.length ? q.dates : [q.date];
   const sources = dates.map((d) => ({ from: q.from, to: q.to, date: d }));
+  // 按日限额取数：一次 SQL 只查一天，槽位（≤6 个数据源）全给同一天的不同机场对。
+  // 与「一次查 6 天」相比调用次数不变，但单次行数不再挤爆 200 行上限。
   const perDay = opts && Number(opts.perDay) > 0 ? Number(opts.perDay) : 0;
   const sql = perDay
     ? vf.buildSqlPerDay(sources, perDay, q.market || (opts && opts.market),
@@ -286,6 +288,8 @@ function buildLegs(caseCfg, opts) {
   }
 
   // ── 打车 / 接驳（双向，即到即走） ──
+  // 人数只影响「按车计价」的边（打车 / 包车），按人头卖的票（机票、火车、中巴）不受影响。
+  const party = Math.max(1, Number((caseCfg.params || {}).party || 1));
   for (const g of net.ground || []) {
     stats.groundRows += 2;
     for (const [a, b] of [[g.from, g.to], [g.to, g.from]]) {
@@ -308,8 +312,21 @@ function buildLegs(caseCfg, opts) {
         // 到了太晚就等次日首班，太早就等当日首班。日本电车按平均候车估算时靠它兜住末班。
         serviceFrom: g.serviceFrom == null ? null : Number(g.serviceFrom),
         serviceTo: g.serviceTo == null ? null : Number(g.serviceTo),
-        cost: g.cost || 0,
-        fare: g.cost || 0,
+        // windowHard：窗口不光管「能不能上路」，还管「整段要在窗内跑完」。
+        // 阿勒泰进山的三条路（含阿禾公路 10:00–14:00 通行、20:00 前驶离）都要这个，
+        // 否则模型会给出「18:15 出发、夜里跑 6 小时」这种名义合规、实际封路的解。
+        windowHard: g.windowHard ? true : null,
+        // ── 按车计价 ────────────────────────────────────────────
+        // 打车/包车是「一车一个价」，写进 cost 的必须是人均，否则和机票（按人头）混在
+        // 一起加，人数一多就系统性高估。路径表里用 wholeCar 给整车价，这里按 party 摊。
+        // party 缺省 1，等价于「一个人出行」，与改造前行为一致。
+        wholeCar: g.wholeCar == null ? null : Number(g.wholeCar),
+        cost: g.wholeCar != null ? Math.round((Number(g.wholeCar) / party) * 10) / 10 : (g.cost || 0),
+        fare: g.wholeCar != null ? Math.round((Number(g.wholeCar) / party) * 10) / 10 : (g.cost || 0),
+        // 租车是「按天计价」，整车价随租期浮动，静态 cost 表达不了：
+        // 这里只留日租金与取还车附加时间，租金由 enumerate.js 在配对后按实际租期补。
+        dayRate: g.dayRate == null ? null : Number(g.dayRate),
+        pickupPad: g.pickupPad == null ? null : Number(g.pickupPad),
         tax: 0,
         // service 由路径表显式给（如「スカイライナー」「京急+JR」）；没给才用通用名。
         // 一个案例里有多条接驳时，全叫「雪场接驳」会把机场快线也标成雪场接驳。
@@ -343,18 +360,29 @@ function toRows(legs) {
     ref: l.label || l.ref,
     seg: l.seg,
     note: l.note,
+    // 冬季封路窗口。以前只写在备注里（「12:33 后发车当日到不了」），机器读不出来，
+    // 报告也就没法自己判断某段是不是被窗口推到了次日。给成分钟数，可读也可算。
+    winFrom: l.serviceFrom == null ? '' : fmtClock(l.serviceFrom),
+    winTo: l.serviceTo == null ? '' : fmtClock(l.serviceTo),
+    winHard: l.windowHard ? '整段需在窗内' : (l.serviceFrom == null && l.serviceTo == null ? '' : '按发车时刻'),
   }));
 }
 
+/** 分钟数 → HH:MM，给 CSV 用 */
+function fmtClock(min) {
+  const m = ((Number(min) % 1440) + 1440) % 1440;
+  return String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+}
+
 function writeCsv(legs, file) {
-  const head = ['起点', '终点', '开始时间', '结束时间', '花费', '方式', '班次', '段数', '备注'];
+  const head = ['起点', '终点', '开始时间', '结束时间', '花费', '方式', '班次', '段数', '通行窗起', '通行窗止', '窗口性质', '备注'];
   const lines = [head.join(',')];
   const esc = (v) => {
     const s = String(v == null ? '' : v);
     return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   };
   for (const r of toRows(legs)) {
-    lines.push([r.from, r.to, r.start, r.end, r.cost, r.mode, r.ref, r.seg, r.note].map(esc).join(','));
+    lines.push([r.from, r.to, r.start, r.end, r.cost, r.mode, r.ref, r.seg, r.winFrom, r.winTo, r.winHard, r.note].map(esc).join(','));
   }
   fs.writeFileSync(file, '\uFEFF' + lines.join('\n'), 'utf8');
 }
@@ -367,6 +395,20 @@ module.exports = {
 // ---------------------------------------------------------------- CLI
 if (require.main === module) {
   const argv = process.argv.slice(2);
+
+  // --csv-only <算例目录>：只把已有的 legs.json 重新导出成 legs.csv，不重跑网络。
+  // 有些老算例目录当年只留了 legs.json；交付要求两份都在（CSV 给人看，JSON 给枚举用），
+  // 用同一个写手导出，格式才不会跟别处漂。
+  if (argv.includes('--csv-only')) {
+    const dir = argv.find((a) => !a.startsWith('--'));
+    if (!dir) { console.error('用法: node legs.js --csv-only <算例目录>'); process.exit(1); }
+    const jf = path.join(dir, 'legs.json');
+    const cf = path.join(dir, 'legs.csv');
+    writeCsv(JSON.parse(fs.readFileSync(jf, 'utf8')), cf);
+    console.log('CSV  →', cf, '（由 legs.json 导出）');
+    process.exit(0);
+  }
+
   const cfgPath = argv.find((a) => !a.startsWith('--'));
   if (!cfgPath) { console.error('用法: node legs.js <case.json> [--out legs.csv]'); process.exit(1); }
   const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));

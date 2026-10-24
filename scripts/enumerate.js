@@ -27,6 +27,7 @@ const path = require('path');
 
 const L = require('./legs');
 const G = require('./graphcore');
+const H = require('./holidays');
 
 const { fmtAbs } = L;
 const { dayOf, hhmm, snowHours, leaveOfOut, leaveOfRet, midWorkdays } = G;
@@ -46,6 +47,8 @@ const legs = JSON.parse(fs.readFileSync(legsFile, 'utf8'));
 
 const TOP = Number(getArg('top', 30));
 const OUTDIR = getArg('outdir', path.dirname(path.resolve(cfgPath)));
+// 允许 --outdir 指向一个还不存在的目录：复现时通常是先解压到空目录再重跑一遍
+fs.mkdirSync(OUTDIR, { recursive: true });
 
 const P = cfg.params;
 const RULE = P.leave;
@@ -58,13 +61,124 @@ const QUERY_DAYS = P.leaveDays != null
 const SESSION_H = (hhmm(R.dayClose) - hhmm(R.dayOpen)) / 60;
 const BOUNDARY = hhmm(P.nightBoundary || '03:00');
 const FREE_WAIT = P.terminalWaitFreeMin == null ? 240 : P.terminalWaitFreeMin;
-const LODGE_R = P.lodgingResort;
-const LODGE_T = P.lodgingTransit;
+// 同行人数：只用来摊「按车计价」的车费（租车日租金），按人头卖的票不受影响。缺省 1。
+const PARTY = Math.max(1, Number(P.party || 1));
+
+// ---------------------------------------------------------------- 乌鲁木齐加滑（可选）
+// 阿勒泰方向的行程几乎都要在乌鲁木齐中转。若「到乌鲁木齐 → 回深圳起飞」这段窗口够长，
+// 可以插一个天山（丝绸之路）的日场，把纯等待换成雪时。配置写在 params.urcSki，不写就完全不影响旧结果。
+const US = P.urcSki && P.urcSki.enabled !== false ? P.urcSki : null;
+const US_R = US ? {
+  dayOpen: US.open, dayClose: US.close,
+  nightOpen: US.nightOpen || null, nightClose: US.nightClose || null,
+  nightWeight: US.nightWeight == null ? 0.5 : US.nightWeight,
+  seasonStart: US.seasonStart, seasonEnd: US.seasonEnd,
+} : null;
+const US_SESSION_H = US ? (hhmm(US.close) - hhmm(US.open)) / 60 : 0;
+
+// 住宿单价。默认口径是「每人每晚」；写 params.lodgingPer = "room" 表示给的是「每间每晚」，
+// 要按同行人数折成每人：两人一间 → 每人摊 ⌈party/2⌉/party 间。
+// 禾木元旦实价 700 元是两人间的房价，不是一个人的床位费，不折就会把住宿算成两倍。
+const ROOM_BASED = String(P.lodgingPer || '') === 'room';
+const ROOM_SHARE = Math.ceil(PARTY / 2) / PARTY;
+const LODGE_R = ROOM_BASED ? P.lodgingResort * ROOM_SHARE : P.lodgingResort;
+const LODGE_T = ROOM_BASED ? P.lodgingTransit * ROOM_SHARE : P.lodgingTransit;
 const ORIGIN = cfg.origin, RESORT = cfg.resort;
 const WIN_FROM = L.dayNum(cfg.dates.from) * 1440;
 const WIN_TO = L.dayNum(cfg.dates.to) * 1440 + 1440;
 
+// ---------------------------------------------------------------- 日历
+// 年假只认「这天用不用上班」。法定假与调休由 holidays.js 解析后挂到 RULE.cal 上，
+// graphcore 的 isFreeDay 会先判调休上班日、再判法定假日、最后退回周六日。
+// 不写 params.calendar 也没有 holidays/workdays 时，日历完全不启用（旧行为）。
+const CAL_YEARS = [];
+for (let y = Number(String(cfg.dates.from).slice(0, 4)); y <= Number(String(cfg.dates.to).slice(0, 4)); y++) {
+  CAL_YEARS.push(y);
+}
+const CAL = H.resolve({
+  years: CAL_YEARS,
+  calendar: P.calendar,
+  holidays: P.holidays,
+  workdays: P.workdays,
+});
+if (CAL.enabled) RULE.cal = CAL.set;
+
 const coreCfg = { boundaryMin: BOUNDARY, freeWaitMin: FREE_WAIT, RULE };
+
+/**
+ * 返程尾段能不能插一个天山日场。
+ *
+ * 只改「到乌鲁木齐 → 回机场」这一段，所以年假档、住宿夜数、去程全部不动：
+ *   - 年假只认首末航班时刻，加滑不改变任何一次起降；
+ *   - 03:00 采样点仍在机场或路上，不会凭空多出一晚；
+ *   - 代价只有两段打车（减去本来就要付的那一段）。
+ *
+ * 两种接法都要认：
+ *   (a) 火车到乌鲁木齐站 → 打车去雪场 → 打车回机场（替换掉「站→机场」那一程）
+ *   (b) 飞机直接到地窝堡 → 打车去雪场 → 打车回机场
+ */
+function urcSkiBlock(r) {
+  const legs = r.legs;
+  if (!US || !legs || legs.length < 2) return null;
+  const n = legs.length;
+  const last = legs[n - 1];
+  if (last.to !== ORIGIN || last.from !== US.toNode) return null;
+  const prev = legs[n - 2];
+  let base, transferMin, replaced = 0;
+  if (prev.from === US.fromNode && prev.to === US.toNode) {
+    base = prev.dep; transferMin = US.toResortMin; replaced = prev.cost || 0;
+  } else if (prev.to === US.toNode) {
+    base = prev.arr; transferMin = US.fromAirportMin;
+  } else {
+    return null;
+  }
+  const arrive = base + transferMin;
+  const latest = last.dep - US.checkinMin - US.toAirportMin;
+  const d0 = dayOf(arrive);
+  const start = Math.max(arrive, d0 * 1440 + hhmm(US.open));
+  const end = Math.min(latest, d0 * 1440 + hhmm(US.close));
+  if (end - start < (US.minBlockMin || 180)) return null;
+  const sh = snowHours(start, end, US_R);
+  if (sh.hEff <= 0) return null;
+  const r1 = (v) => Math.round(v * 10) / 10;
+  return {
+    hDay: sh.hDay, hNight: sh.hNight, hEff: sh.hEff, start, end,
+    costDelta: r1(US.costToResort + US.costToAirport - replaced),
+    from: US.fromNode, via: prev.from === US.fromNode ? 'rail' : 'air',
+  };
+}
+
+/**
+ * 去程尾段同理：飞机到地窝堡 → 雪场 → 乌鲁木齐站赶硬卧。
+ * 这段的价值往往更高——0 天档去程在乌鲁木齐有 11 小时空等（12:20 落地、23:40 发车）。
+ * 只有 params.urcSki.outbound 打开时才启用。
+ */
+function urcSkiBlockOut(o) {
+  const legs = o.legs;
+  if (!US || !US.outbound || !legs || legs.length < 3) return null;
+  const n = legs.length;
+  let idx = -1;
+  for (let k = 0; k < n - 1; k++) {
+    if (legs[k].from === US.toNode && legs[k].to === US.fromNode) idx = k;
+  }
+  if (idx < 0) return null;
+  const taxi = legs[idx], next = legs[idx + 1];
+  if (!next || next.dep == null) return null;
+  const arrive = taxi.dep + US.fromAirportMin;
+  const latest = next.dep - US.toStationMin - (US.minGapMin || 20);
+  const d0 = dayOf(arrive);
+  const start = Math.max(arrive, d0 * 1440 + hhmm(US.open));
+  const end = Math.min(latest, d0 * 1440 + hhmm(US.close));
+  if (end - start < (US.minBlockMin || 180)) return null;
+  const sh = snowHours(start, end, US_R);
+  if (sh.hEff <= 0) return null;
+  const r1 = (v) => Math.round(v * 10) / 10;
+  return {
+    hDay: sh.hDay, hNight: sh.hNight, hEff: sh.hEff, start, end,
+    costDelta: r1(US.costToResort + US.costToStation - (taxi.cost || 0)),
+    from: US.fromNode, via: 'air',
+  };
+}
 
 /** 一条路径 → 报告用的逐段明细（只保留渲染要用的字段，避免 top.json 膨胀） */
 const slim = (p) => p.legs.map((g) => ({
@@ -108,10 +222,22 @@ for (const o of outs) {
     if (leaveResort <= arriveResort) { skippedTime++; continue; }
     pairs++;
 
-    const leave = leaveOutDays + leaveOfRet(r.lastArr, RULE) + midWorkdays(o.firstDep, r.lastArr);
+    const leave = leaveOutDays + leaveOfRet(r.lastArr, RULE) + midWorkdays(o.firstDep, r.lastArr, RULE);
 
     const h = snowHours(arriveResort, leaveResort, R);
     if (h.hEff <= 0.05) { skippedZero++; continue; }
+
+    // 返程尾段的乌鲁木齐加滑。h 只加雪时，钱只加两段打车（在下面 transport 里），
+    // 年假档与住宿夜数一个都不动 —— 这条边界必须守住，否则「加滑」会变成「偷改档位」。
+    const tms = urcSkiBlock(r);
+    const tmsOut = urcSkiBlockOut(o);
+    for (const blk of [tms, tmsOut]) {
+      if (!blk) continue;
+      h.hDay = +(h.hDay + blk.hDay).toFixed(2);
+      h.hNight = +(h.hNight + blk.hNight).toFixed(2);
+      h.hEff = +(h.hEff + blk.hEff).toFixed(2);
+    }
+    const tmsH = (tms ? tms.hEff : 0) + (tmsOut ? tmsOut.hEff : 0);
 
     // 住宿：逐个夜间采样点判定人在哪 —— 雪场 / 某个节点 / 正在路上
     let resortN = 0, hotelN = 0;
@@ -130,10 +256,29 @@ for (const o of outs) {
 
     // 逐段票价可能带一位小数（日元折算），累加会攒出 5435.799999999999 这种尾巴
     const r1 = (v) => Math.round(v * 10) / 10;
-    const transport = r1(o.cost + r.cost);
+
+    // 租车按天计价：租金 = 日租金 × 实际取还车天数，整趟只收一次。
+    // 静态 cost 表达不了它（租期随行程浮动），所以路径表里只给 dayRate + 取还车附加时间，
+    // 到这里拿到 arriveResort / leaveResort 才算得准。取车 = 到场 − 附加，还车 = 离场 + 附加。
+    // 去程返程各有租车边时取 max 的日租金，绝不相加——那是同一辆车。
+    const carLegs = (o.legs || []).concat(r.legs || []).filter((g) => g.dayRate);
+    let rental = 0, rentalDays = 0;
+    if (carLegs.length) {
+      const rate = Math.max.apply(null, carLegs.map((g) => g.dayRate));
+      const pad = Math.max.apply(null, carLegs.map((g) => g.pickupPad || 0));
+      rentalDays = Math.max(1, Math.ceil((leaveResort + pad - (arriveResort - pad)) / 1440));
+      rental = r1((rate * rentalDays) / PARTY);
+    }
+
+    const transport = r1(o.cost + r.cost + rental + (tms ? tms.costDelta : 0) + (tmsOut ? tmsOut.costDelta : 0));
     const lodge = r1(resortN * LODGE_R + hotelN * LODGE_T);
     const total = r1(transport + lodge);
-    const days = h.hEff / SESSION_H;
+    // 「雪日」按各场自己的日场时长折算：将军山 9h、天山 8h。
+    // 直接拿总雪时除以 9 会把天山的 8 小时一天算成 0.89 个将军山雪日，两边都不准。
+    // 必须判 tmsH > 0：没启用 urcSki 的算例 US_SESSION_H = 0，写成 tmsH / US_SESSION_H
+    // 就是 0/0 = NaN，days 变 NaN → perDay 变 Infinity，整张表全废（禾木算例踩过）。
+    const days = (h.hEff - tmsH) / SESSION_H
+      + (tmsH > 0 && US_SESSION_H > 0 ? tmsH / US_SESSION_H : 0);
 
     // 纯「元/雪日」排序会漏掉「便宜但难受」的坑，单独打标
     const allLegs = o.legs.concat(r.legs);
@@ -141,6 +286,9 @@ for (const o of outs) {
     const flags = [];
     if (maxStop > 180) flags.push('长中转 ' + (Math.round(maxStop / 6) / 10) + 'h');
     if (hotelN > 0) flags.push('中转过夜 ' + hotelN + ' 晚');
+    if (rentalDays > 0) flags.push('租车 ' + rentalDays + ' 天');
+    if (tms) flags.push('返程天山加滑 ' + tms.hEff + 'h');
+    if (tmsOut) flags.push('去程天山加滑 ' + tmsOut.hEff + 'h');
 
     itineraries.push({
       leave,
@@ -160,6 +308,16 @@ for (const o of outs) {
       transport, lodge, total,
       resortN, hotelN, maxStop, flags,
       hDay: h.hDay, hNight: h.hNight, hEff: h.hEff,
+      tms: tms ? {
+        h: tms.hEff, day: tms.hDay, night: tms.hNight,
+        start: fmtAbs(tms.start), end: fmtAbs(tms.end),
+        cost: tms.costDelta, via: tms.via,
+      } : null,
+      tmsOut: tmsOut ? {
+        h: tmsOut.hEff, day: tmsOut.hDay, night: tmsOut.hNight,
+        start: fmtAbs(tmsOut.start), end: fmtAbs(tmsOut.end),
+        cost: tmsOut.costDelta, via: tmsOut.via,
+      } : null,
       days: +days.toFixed(2),
       perDay: days > 0 ? Math.round(total / days) : Infinity,
       perHour: h.hEff > 0 ? +(total / h.hEff).toFixed(1) : Infinity,
@@ -219,6 +377,13 @@ fs.writeFileSync(path.join(OUTDIR, 'top.json'), JSON.stringify({
     pairs, skippedTime, skippedZero,
     queryDays: QUERY_DAYS,
   },
+  // 年假口径的日历来源，渲染时写进报告「口径与已知局限」
+  calendar: CAL.enabled ? {
+    enabled: true,
+    inWindow: H.describe(CAL, cfg.dates.from, cfg.dates.to),
+    sources: CAL.sources,
+    warnings: CAL.warnings,
+  } : { enabled: false },
   top,
 }, null, 1), 'utf8');
 
@@ -234,6 +399,12 @@ console.log('  配对 ' + pairs + ' 次 → 可行组合 ' + itineraries.length
   + '（时间冲突 ' + skippedTime + '，零雪时 ' + skippedZero + '）');
 console.log('  年假档 ' + BUCKETS.join(' / ') + ' 天' + (QUERY_DAYS == null ? '' : '（查询窗口按 ' + QUERY_DAYS + ' 天铺）'));
 console.log('  耗时 ' + ((Date.now() - t0) / 1000).toFixed(1) + 's');
+if (CAL.enabled) {
+  const d = H.describe(CAL, cfg.dates.from, cfg.dates.to);
+  console.log('  日历 ' + (d.holidays.length ? d.holidays.join('、') : '窗口内无法定假')
+    + '｜' + (d.workdays.length ? '调休上班 ' + d.workdays.join('、') : '无调休上班'));
+  for (const w of CAL.warnings) console.log('  \u26A0 ' + w);
+}
 for (const b of BUCKETS) {
   const n = itineraries.filter((x) => x.leave === b).length;
   const best = top[b][0];

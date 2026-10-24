@@ -14,6 +14,8 @@ const fs = require('fs');
 const path = require('path');
 const L = require('./legs');
 const G = require('./graphcore');
+const D = require('./design');
+const E = require('./embed');
 
 const WD = ['日', '一', '二', '三', '四', '五', '六'];
 const dayOf = (a) => Math.floor(a / 1440);
@@ -157,6 +159,16 @@ function snowRows(it) {
     // md/wd 收的是绝对分钟，dw.day 是天号，要乘回分钟
     return [md(dw.day * 1440) + ' ' + wd(dw.day * 1440), spans.join(' \u00b7 '), (Math.round(min / 6) / 10) + 'h'];
   });
+  // 加滑段（乌鲁木齐天山）落在主雪场窗口之外，snowWindows 看不到它，
+  // 所以单独补行——否则明细逐日相加会小于 hEff，读者会以为算错了。
+  // 只补时段与雪时，往返行程一段都不改。
+  for (const pair of [['去程', it.tmsOut], ['返程', it.tms]]) {
+    const tag = pair[0], blk = pair[1];
+    if (!blk) continue;
+    rows.push([tag + ' 天山加滑（机场/车站接驳按预估车程）',
+      blk.start.slice(5, 10) + ' ' + blk.start.slice(11) + '\u2013' + blk.end.slice(11),
+      (Math.round(blk.h * 10) / 10) + 'h']);
+  }
   // 末行把口径写明：夜场折半后的「有效雪时」不等于表里各段时长之和
   rows.push(['合计　日场 ' + it.hDay + 'h + 夜场 ' + it.hNight + 'h × ' + nightW, '', it.hEff + 'h', 'sum']);
   return rows;
@@ -274,6 +286,10 @@ function table(list) {
 const BUCKETS = topData.buckets;
 const SESSION = (Number(RES.dayClose.slice(0, 2)) * 60 + Number(RES.dayClose.slice(3)) -
   (Number(RES.dayOpen.slice(0, 2)) * 60 + Number(RES.dayOpen.slice(3)))) / 60;
+// 夜场权重：case/network 里没写就按 graphcore 的默认 0.5——否则页面会印出「按 undefined 折算」
+const NIGHT_W = RES.nightWeight == null ? 0.5 : RES.nightWeight;
+// 日场「太短就不算」的阈值，和 graphcore.snowWindows 用的是同一个默认值
+const MIN_DAY_H = RES.minDayH == null ? 3 : Number(RES.minDayH);
 
 const cards = BUCKETS.map((b) => {
   const list = topData.top[b] || [];
@@ -283,80 +299,24 @@ const cards = BUCKETS.map((b) => {
 }).join('');
 
 // ---------------------------------------------------------------- 趋势图
-/** 年假天数 → 最优档三项指标的折线图（纯 SVG，不引外部图表库）
- *  三项单位不同（¥/雪日、h、¥），塞进一根真实纵轴会互相压扁到看不出趋势，
- *  所以画在同一块画布上、每项各自按自己的区间铺满整高：斜率可比，高低不可比。
- *  真实数值放在图例的「起点 → 终点」和右端标签里，不在每个点上堆数字。 */
+/** 年假天数 → 最优档三项指标（几何与配色见 design.trendChart） */
 function trendChart() {
-  const pts = BUCKETS.map((b, i) => {
+  const pts = BUCKETS.map((b) => {
     const it = (topData.top[b] || [])[0];
-    return it ? { i: i, b: b, perDay: it.perDay, h: it.hEff, total: it.total } : null;
+    return it ? { b: b, perDay: it.perDay, h: it.hEff, total: it.total } : null;
   });
   if (!pts.length || pts.some((p) => !p)) return '';
-
-  const SERIES = [
-    { name: '元/雪日', color: '#2f6fed', v: (p) => p.perDay, f: (x) => '¥' + x },
-    { name: '雪时', color: '#d97706', v: (p) => p.h, f: (x) => x.toFixed(2) + 'h' },
-    { name: '总花费', color: '#8b93a1', v: (p) => p.total, f: (x) => '¥' + x }
-  ];
-
-  const W = 632, H = 214, PL = 66, PR = 552, PT = 16, PB = 180;
-  const x = (i) => PL + (i * (PR - PL)) / Math.max(pts.length - 1, 1);
-
-  const grid = [0, 1, 2, 3].map((k) => {
-    const y = PT + ((PB - PT) / 3) * k;
-    return '<line x1="' + PL + '" y1="' + y.toFixed(1) + '" x2="' + PR + '" y2="' + y.toFixed(1) + '" stroke="#eff1f4"/>';
-  }).join('');
-
-  const rows = SERIES.map((se) => {
-    const vals = pts.map(se.v);
-    const lo0 = Math.min.apply(null, vals), hi0 = Math.max.apply(null, vals);
-    const pad = (hi0 - lo0) * 0.14 || Math.max(hi0 * 0.05, 1);
-    const lo = lo0 - pad, hi = hi0 + pad;
-    const y = (v) => PB - ((v - lo) / (hi - lo)) * (PB - PT);
-    const d = pts.map((p, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(se.v(p)).toFixed(1)).join(' ');
-    const dots = pts.map((p, i) => '<circle cx="' + x(i).toFixed(1) + '" cy="' + y(se.v(p)).toFixed(1)
-      + '" r="3.2" fill="#fff" stroke="' + se.color + '" stroke-width="2"/>').join('');
-    return {
-      se: se, d: d, dots: dots,
-      startV: se.f(se.v(pts[0])),
-      startY: y(se.v(pts[0])),
-      endV: se.f(se.v(pts[pts.length - 1])),
-      endY: y(se.v(pts[pts.length - 1]))
-    };
+  return D.trendChart({
+    pts: pts,
+    head: '年假天数 → 各档最优',
+    foot: '横轴＝年假天数；纵轴每项按自身区间铺满，只比斜率不比高低。左右两端标注起止值，图例为「起点→终点」。',
+    aria: '各档最优的元/雪日、雪时、总花费随年假天数的变化',
+    series: [
+      { name: '元/雪日', color: '#2f6fed', v: (p) => p.perDay, f: (x) => '¥' + x },
+      { name: '雪时', color: '#d97706', v: (p) => p.h, f: (x) => x.toFixed(2) + 'h' },
+      { name: '总花费', color: '#8b93a1', v: (p) => p.total, f: (x) => '¥' + x }
+    ]
   });
-
-  // 起止点标签：先按各自点的真实位置排，再自上而下推挤，避免两条线靠太近时字叠字
-  const spread = (list) => {
-    list.sort((a, b) => a.y - b.y);
-    for (let i = 1; i < list.length; i++) {
-      if (list[i].y - list[i - 1].y < 14) list[i].y = list[i - 1].y + 14;
-    }
-    const over = list.length ? list[list.length - 1].y - PB : 0;
-    if (over > 0) list.forEach((l) => { l.y -= over; });
-    return list;
-  };
-  const lab = (l, x, anchor) => '<text x="' + x + '" y="' + (l.y + 3.2).toFixed(1) + '" font-size="9.5"'
-    + (anchor === 'end' ? ' text-anchor="end"' : '') + ' fill="' + l.c + '">' + l.v + '</text>';
-  const startLabels = spread(rows.map((r) => ({ y: r.startY, v: r.startV, c: r.se.color })))
-    .map((l) => lab(l, PL - 9, 'end')).join('');
-  const endLabels = spread(rows.map((r) => ({ y: r.endY, v: r.endV, c: r.se.color })))
-    .map((l) => lab(l, PR + 9)).join('');
-
-  const xs = pts.map((p, i) => '<text x="' + x(i).toFixed(1) + '" y="' + (H - 8)
-    + '" text-anchor="middle" font-size="10" fill="#6b7280">' + p.b + ' 天</text>').join('');
-
-  const legend = rows.map((r) => '<span><i style="background:' + r.se.color + '"></i>'
-    + r.se.name + ' <b>' + r.startV + '</b>\u2192<b>' + r.endV + '</b></span>').join('');
-
-  return '<div class="chartbox">'
-    + '<div class="chead"><span class="ct2">年假天数 → 各档最优</span><span class="lg">' + legend + '</span></div>'
-    + '<svg viewBox="0 0 ' + W + ' ' + H + '" width="' + W + '" height="' + H + '" role="img" aria-label="各档最优的元/雪日、雪时、总花费随年假天数的变化">'
-    + grid + rows.map((r) => '<path d="' + r.d + '" fill="none" stroke="' + r.se.color
-      + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' + r.dots).join('')
-    + endLabels + startLabels + xs + '</svg>'
-    + '<div class="cfoot">横轴＝年假天数；纵轴每项按自身区间铺满，只比斜率不比高低。左右两端标注起止值，图例为「起点→终点」。</div>'
-    + '</div>';
 }
 
 const ALL = BUCKETS.reduce((a, b) => a.concat(topData.top[b] || []), []).sort((a, b) => a.perDay - b.perDay);
@@ -388,101 +348,12 @@ const stepBox = (n, t, d) => '<div class="step"><div class="sn">' + n + '</div><
 
 const totalCombos = (topData.totalCombos || 0);
 const html = '<!DOCTYPE html>\n<html lang="zh-CN"><head><meta charset="utf-8"><title>' + cfg.title + ' · 路径枚举报告</title><style>'
-  + '*{box-sizing:border-box}'
-  + 'body{margin:0;padding:34px 28px 70px;font-family:-apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;background:#f5f6f8;color:#16181d;-webkit-font-smoothing:antialiased}'
-  + '.wrap{max-width:1580px;margin:0 auto}'
-  + 'h1{font-size:25px;margin:0 0 8px;letter-spacing:-.4px}'
-  + '.sub{color:#6b7280;font-size:13px;line-height:1.8}'
-  + '.sub b{color:#16181d;font-weight:600}'
-  + 'h2{font-size:15px;margin:0}'
-  + '.sec{margin-top:30px}'
-  + '.sh{display:flex;align-items:center;gap:9px;margin:30px 0 14px}'
-  + '.sh::before{content:"";width:3px;height:15px;background:#2f6fed;border-radius:2px}'
-  + '.steps{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}'
-  + '.step{background:#fff;border:1px solid #e4e7ec;border-radius:10px;padding:14px 15px;position:relative}'
-  + '.sn{font-size:11px;font-weight:700;color:#2f6fed;letter-spacing:.5px}'
-  + '.st{font-size:13.5px;font-weight:600;margin:5px 0 6px}'
-  + '.sd{font-size:11.5px;color:#6b7280;line-height:1.65}'
-  + '.stat{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-top:12px}'
-  + '.sb{background:#fff;border:1px solid #e4e7ec;border-radius:9px;padding:12px 14px}'
-  + '.sv{font-size:20px;font-weight:700;letter-spacing:-.5px}'
-  + '.sl{font-size:11px;color:#8b93a1;margin-top:2px}'
-  + '.cards{display:grid;grid-template-columns:repeat(' + Math.max(BUCKETS.length, 1) + ',minmax(0,1fr));gap:12px}'
-  + '.chartbox{margin-top:12px;background:#fff;border:1px solid #e4e7ec;border-radius:11px;padding:13px 16px 9px;max-width:664px}'
-  + '.chead{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}'
-  + '.ct2{font-size:12px;font-weight:600;color:#3f4652}'
-  + '.lg{display:flex;gap:12px;font-size:10.5px;color:#6b7280}'
-  + '.csub{font-size:10px;color:#b3b9c4}'
-  + '.lg b{color:#3f4652;font-weight:600}'
-  + '.lg i{display:inline-block;width:9px;height:2px;border-radius:1px;margin-right:4px;vertical-align:middle}'
-  + '.cfoot{font-size:10px;color:#a6adba;margin-top:3px}'
-  + '.card{background:#fff;border:1px solid #e4e7ec;border-radius:11px;padding:15px 17px}'
-  + '.card.empty{opacity:.45}'
-  + '.ct{display:flex;justify-content:space-between;align-items:center;margin-bottom:9px}'
-  + '.cr{font-size:10.5px;color:#98a0ad}'
-  + '.cp{font-size:27px;font-weight:700;letter-spacing:-.7px}'
-  + '.cu{font-size:12px;font-weight:500;color:#6b7280;margin-left:2px}'
-  + '.cl{font-size:12.5px;color:#3f4652;margin-top:3px;cursor:help}'
-  + '.cl span{cursor:help}.cl span+span{margin-left:14px}'
-  + '.cl span:hover{color:#1d4ed8}'
-  + '.cbar{display:flex;gap:14px;font-size:11.5px;color:#8b93a1;margin-top:8px;padding-top:8px;border-top:1px dashed #eceef1}'
-  + '.croute{font-size:11px;margin-top:9px;line-height:1.7;cursor:help}'
-  + '.cm{font-size:11px;color:#98a0ad;margin-top:9px;padding-top:8px;border-top:1px dashed #eceef1;line-height:1.6}'
-  + '.cm span{display:block;white-space:nowrap}'
-  + '.cflag{font-size:11px;color:#b45309;background:#fef6e7;border-radius:5px;padding:3px 7px;margin-top:7px;display:inline-block}'
-  + '.bg{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11.5px;font-weight:600}'
-  + '.b0{background:#e7f5ee;color:#0d7a4c}.bh{background:#fdf0e2;color:#b45309}.b1{background:#e7eefd;color:#1d4ed8}'
-  + '.tabs{display:flex;gap:6px;margin:6px 0 0}'
-  + '.tab{font:inherit;font-size:13px;padding:8px 20px;border-radius:8px;border:1px solid #d6dae1;background:#fff;color:#3f4652;cursor:pointer;font-weight:500}'
-  + '.tab.on{background:#16181d;border-color:#16181d;color:#fff}'
-  + '.panel{display:none;margin-top:14px}.panel.on{display:block}'
-  + '.phead{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px}'
-  + '.pmeta{font-size:11.5px;color:#98a0ad}'
-  + 'table{border-collapse:separate;border-spacing:0;background:#fff;border:1px solid #e4e7ec;border-radius:10px;overflow:hidden;font-size:12px;width:100%}'
-  + 'th{background:#f9fafb;text-align:left;padding:9px 8px;font-weight:600;color:#4b5563;font-size:11px;border-bottom:1px solid #e4e7ec;white-space:nowrap}'
-  + 'td{padding:8px;border-bottom:1px solid #f1f3f5;vertical-align:top}'
-  + 'tbody tr:hover{background:#fafbfc}tbody tr:last-child td{border-bottom:none}'
-  + '.num{text-align:right;font-variant-numeric:tabular-nums}'
-  + '.mono{font-variant-numeric:tabular-nums;white-space:nowrap;font-size:11.5px;line-height:1.5}'
-  + '.dim{color:#98a0ad;font-size:10.5px}.price{font-weight:700;font-size:13px}'
-  + '.costcell,.lodgecell,.cbar{cursor:help}'
-  + '.lodgecell:hover{color:#1d4ed8}'
-  + '.costcell:hover,.cbar:hover{color:#1d4ed8}'
-  + '.rt{font-size:11px;line-height:1.7;min-width:172px;cursor:help}'
-  + '.chain{display:block;white-space:nowrap;color:#16181d;letter-spacing:.1px}'
-  + '.refs{display:block;white-space:nowrap;color:#a0a7b3;font-size:10px;margin-top:1px;'
-  + 'font-variant-numeric:tabular-nums;letter-spacing:.15px}'
-  + '.nd{font-weight:600}.nd.weak{font-weight:500;color:#939aa6}'
-  + '.ic{font-size:10px;margin:0 2px;vertical-align:1px;line-height:1}'
-  + '.ic.flight{color:#1d4ed8}.ic.rail{color:#0d7a4c}'
-  + '.ic.taxi{color:#c6cbd3}.ic.shuttle{color:#c6cbd3}'
-  + '.rt:hover .chain,.croute:hover .chain{color:#1d4ed8}.rt:hover .refs,.croute:hover .refs{color:#8fa2c8}'
-  + '#tip{position:fixed;z-index:99;pointer-events:none;background:#16181d;color:#fff;border-radius:7px;'
-  + 'font-size:11px;line-height:1.7;padding:10px 13px;opacity:0;transition:opacity .12s;'
-  + 'box-shadow:0 10px 30px rgba(0,0,0,.28)}'
-  + '#tip .tg{display:grid;grid-template-columns:auto auto auto auto auto;column-gap:14px;row-gap:1px}'
-  + '#tip .tg.snow{grid-template-columns:auto auto auto;column-gap:18px;row-gap:2px}'
-  + '#tip .tg.cost{grid-template-columns:auto auto auto;column-gap:16px;row-gap:0}'
-  + '#tip .tc.n{color:#9aa1ad}'
-  + '#tip .rowline{grid-column:1/-1;display:flex;justify-content:space-between;'
-  + 'border-top:1px solid #3c424c;padding-top:5px;margin-top:5px;color:#fff}'
-  + '#tip .rowline.sum{font-weight:600}'
-  + '#tip .rowline.grand{font-weight:700;border-top-color:#6b7280}'
-  + '#tip .tc{white-space:nowrap}'
-  + '#tip .tc.t{color:#a9b1be;font-variant-numeric:tabular-nums}'
-  + '#tip .tc.c{text-align:right;font-variant-numeric:tabular-nums}'
-  + '#tip .tc.x{color:#8f97a4}'
-  + '#tip .tc.m{color:#e5e7eb}'
-  + '.fl{display:inline-block;font-size:10px;background:#fef6e7;color:#a16207;border-radius:4px;padding:1px 5px;margin:1px 2px 1px 0;white-space:nowrap}'
-  + '.notes{background:#fff;border:1px solid #e4e7ec;border-radius:10px;padding:16px 20px;font-size:12.5px;line-height:1.9;color:#3f4652}'
-  + '.notes b{color:#16181d}'
-  + '.notes ul{margin:0;padding-left:17px}.notes li{margin:4px 0}'
-  + '.notes code{background:#f3f4f6;padding:1px 5px;border-radius:4px;font-size:11.5px;color:#b45309}'
-  + '.warn{background:#fef2f2;border:1px solid #f6c9c6;border-radius:9px;padding:13px 17px;font-size:12.5px;line-height:1.85;color:#8a1f1a;margin-top:10px}'
+  + D.css({cardCols: Math.max(BUCKETS.length, 1)})
   + '</style></head><body><div class="wrap">'
   + '<h1>' + cfg.title + '</h1>'
   + '<div class="sub">' + nodeName(cfg.origin) + ' ⇄ ' + nodeName(cfg.resort) + '　|　日场 <b>' + RES.dayOpen + '–' + RES.dayClose + '</b>（' + SESSION + 'h）　夜场 <b>'
-  + (RES.nightOpen || '—') + '–' + (RES.nightClose || '—') + '</b> 按 <b>' + RES.nightWeight + '</b> 折算<br>'
+  + (RES.nightOpen || '—') + '–' + (RES.nightClose || '—') + '</b>'
+  + (RES.nightOpen ? ' 按 <b>' + NIGHT_W + '</b> 折算' : '（无夜场）') + '<br>'
   + '住宿 雪场 <b>¥' + cfg.params.lodgingResort + '/晚</b>　中转 <b>¥' + cfg.params.lodgingTransit + '/晚</b>　|　'
   + '请假分界：<b>' + cfg.params.leave.dayStart + '</b> / <b>' + cfg.params.leave.halfDayAt + '</b> / <b>' + cfg.params.leave.dayEnd + '</b></div>'
 
@@ -515,7 +386,29 @@ const html = '<!DOCTYPE html>\n<html lang="zh-CN"><head><meta charset="utf-8"><t
   + '<div class="sh"><h2>口径与已知局限</h2></div>'
   + '<div class="notes"><ul>'
   + '<li><b>元/雪日</b> = （交通费 + 住宿费）÷（有效雪时 ÷ ' + SESSION + '）。<b>不含</b>雪票、租装备、餐饮、雪场停车。</li>'
-  + '<li><b>有效雪时</b> = 日场实测小时 + 夜场实测小时 × ' + RES.nightWeight + '。到场 = 落地 + 出站 + 车程；离场 = 首段发车 − 进站 − 车程。</li>'
+  + '<li><b>有效雪时</b> = 日场实测小时'
+  + (RES.nightOpen ? ' + 夜场实测小时 × ' + NIGHT_W : '（本雪场无夜场）')
+  + '。到场 = 落地 + 出站 + 车程；离场 = 首段发车 − 进站 − 车程。</li>'
+  + (MIN_DAY_H > 0
+    ? '<li><b>日场不足 ' + MIN_DAY_H + ' 小时的日子按 0 计</b>：某一天「到场→离场」和日场营业时间的'
+      + '交集不到 ' + MIN_DAY_H + ' 小时，换鞋、存包、热身都不止这个时间，整天不计雪时。'
+      + '夜场不受此限（夜里上山是另一回事）。</li>'
+    : '')
+  + (function () {
+    const c = topData.calendar;
+    if (!c || !c.enabled) {
+      return '<li><b>年假</b> 按「周六日免假、其余都算上班」计，<b>未考虑法定节假日与调休</b>'
+        + '（case.json 没有写 <code>params.calendar</code>）。碰上元旦、春节这类日期会算错。</li>';
+    }
+    const d = c.inWindow || {};
+    const hl = (d.holidays || []).join('、') || '窗口内无法定假';
+    const wd = (d.workdays || []).join('、');
+    return '<li><b>年假</b> 已接入中国法定节假日与调休：窗口内 ' + hl
+      + (wd ? '；调休上班 ' + wd : '；窗口内无调休上班日')
+      + '。<br>来源：' + (c.sources || []).join('；')
+      + ((c.warnings && c.warnings.length) ? '<br><b>注意</b>　' + c.warnings.join(' ') : '')
+      + '</li>';
+  })()
   + '<li><b>住宿</b> 按每天 ' + (cfg.params.nightBoundary || '03:00') + ' 这一时刻人在哪判定：在雪场记雪场晚，在机场/车站记中转晚，在车上机上记 0。</li>'
   + '<li><b>中转停留 &gt; ' + (cfg.params.maxStopMinutes || 480) + ' 分钟</b>的航班边已在建表时剔除；「长中转」标记指停留 3–8 小时的航班，价格低但体验差，按需避开。</li>'
   + '<li><b>机场代码</b>取自飞常准 <code>legs[].segments[].dep_airport / arr_airport</code>，代码共享航班也能判对；只有升级前落盘的旧缓存缺这一列时，才按航司归属推断。同一起降时刻的多条代码共享行在建表前已按最低价去重。</li>'
@@ -532,38 +425,23 @@ const html = '<!DOCTYPE html>\n<html lang="zh-CN"><head><meta charset="utf-8"><t
   + 'document.querySelectorAll(".tab").forEach(function(t){t.onclick=function(){'
   + 'document.querySelectorAll(".tab").forEach(function(x){x.classList.toggle("on",x===t)});'
   + 'document.querySelectorAll(".panel").forEach(function(p){p.classList.toggle("on",p.id==="p-"+t.dataset.k)});};});'
-  + 'var TIPS=' + JSON.stringify(TIPS) + ';'
-  + 'var tipEl=document.getElementById("tip");'
-  + 'function cell(cls,txt){var d=document.createElement("div");d.className="tc "+cls;d.textContent=txt||"";return d;}'
-  + 'function fillTip(t){'
-  + '  var g=document.createElement("div"),i;'
-  + '  if(t.k==="legs"){'
-  + '    g.className="tg";'
-  + '    (t.rows||[]).forEach(function(r){'
-  + '      var cls=["t","","m","c","x"];'
-  + '      for(i=0;i<5;i++) g.appendChild(cell(cls[i],r[i]));});'
-  + '  } else {'
-  + '    g.className="tg "+(t.k==="snow"?"snow":"cost");'
-  + '    (t.rows||[]).forEach(function(r){'
-  + '      var ex=r[3]||"";'
-  + '      if(ex){'
-  + '        var d=document.createElement("div");d.className="tc rowline "+ex;'
-  + '        var a=document.createElement("span");a.textContent=r[0];'
-  + '        var b=document.createElement("span");b.textContent=r[2];'
-  + '        d.appendChild(a);d.appendChild(b);g.appendChild(d);'
-  + '      } else {'
-  + '        g.appendChild(cell("",r[0]));g.appendChild(cell(t.k==="snow"?"m":"n",r[1]));g.appendChild(cell("c",r[2]));}'
-  + '    });}'
-  + '  tipEl.innerHTML="";tipEl.appendChild(g);}'
-  + 'document.querySelectorAll("[data-tipkey]").forEach(function(el){'
-  + '  el.addEventListener("mouseenter",function(){fillTip(TIPS[+el.dataset.tipkey]||{k:"legs",rows:[]});tipEl.style.opacity=1;});'
-  + '  el.addEventListener("mousemove",function(ev){'
-  + '    var w=tipEl.offsetWidth,h=tipEl.offsetHeight;'
-  + '    var left=Math.min(ev.clientX+14,window.innerWidth-w-12);'
-  + '    var top=ev.clientY-h-12<8?ev.clientY+18:ev.clientY-h-12;'
-  + '    tipEl.style.left=left+"px";tipEl.style.top=top+"px";});'
-  + '  el.addEventListener("mouseleave",function(){tipEl.style.opacity=0;});});'
-  + '</script></body></html>';
+  + D.tipRuntime(TIPS)
+  + '<\/script></body></html>';
 
-fs.writeFileSync(outFile, html, 'utf8');
-console.log('HTML →', outFile);
+// 交付物只有 HTML：把原始数据与算法源码一并嵌进去，别人拿一个文件就能验算
+const packed = E.attach(html, {
+  dir: path.dirname(path.resolve(cfgPath)),
+  title: cfg.title,
+  kind: 'resort',
+  session: SESSION,
+  counts: {
+    legs: legs.length,
+    byMode: byMode,
+    buckets: BUCKETS,
+    topRows: BUCKETS.reduce((a, b) => a + (topData.top[b] || []).length, 0),
+    rawItineraries: topData.rawItineraries,
+  },
+});
+
+fs.writeFileSync(outFile, packed, 'utf8');
+console.log('HTML → ' + outFile + '  (' + (Buffer.byteLength(packed) / 1048576).toFixed(1) + ' MB，含原始数据内嵌)');

@@ -205,19 +205,63 @@ check('雪时 = 窗口与日场交集（同年同日）', () => {
 });
 
 check('日场不足 minDayH 的整天记 0（换鞋热身都不够），夜场不受影响', () => {
-  // 默认阈值 2.5h：12:00–14:00 只有 2h，不够 → 0
+  // 默认阈值 3h：12:00–14:00 只有 2h，不够 → 0
   const short = G.snowHours(at('2026-11-28', 12, 0), at('2026-11-28', 14, 0), RES);
   assert.strictEqual(short.hDay, 0, '2h 日场应记 0');
-  // 同一段窗口若含夜场，夜场照算
+  // 2.5h 在默认 3h 下也不够 —— 这正是把默认从 2.5 提到 3 的那一档
+  const under = G.snowHours(at('2026-11-28', 12, 0), at('2026-11-28', 14, 30), RES);
+  assert.strictEqual(under.hDay, 0, '2.5h 在默认 3h 下应记 0');
+  // 刚好够阈值就保留
+  const ok = G.snowHours(at('2026-11-28', 12, 0), at('2026-11-28', 15, 0), RES);
+  assert.strictEqual(ok.hDay, 3, '3h 应保留');
+  // resort.minDayH 可覆盖：写 2.5 就回到旧口径
+  const override = G.snowHours(at('2026-11-28', 12, 0), at('2026-11-28', 14, 30), { ...RES, minDayH: 2.5 });
+  assert.strictEqual(override.hDay, 2.5, 'minDayH:2.5 时 2.5h 应保留');
+  // 写 0 退回「有一分钟算一分钟」
+  const legacy = G.snowHours(at('2026-11-28', 12, 0), at('2026-11-28', 12, 40), { ...RES, minDayH: 0 });
+  assert.strictEqual(legacy.hDay, 0.67, 'minDayH:0 时 40 分钟也算');
+  // 同一段窗口若含夜场，夜场照算（夜场不设最短时长）
   const night = G.snowHours(at('2026-11-28', 19, 0), at('2026-11-28', 21, 0), RES);
   assert.strictEqual(night.hNight, 2, '夜场不设最短时长');
-  // 刚好够阈值就保留
-  const ok = G.snowHours(at('2026-11-28', 12, 0), at('2026-11-28', 14, 30), RES);
-  assert.strictEqual(ok.hDay, 2.5, '2.5h 应保留');
 });
 
-check('雪时跨日累计，夜场按权重折算', () => {
-  // 周六 09:32 到场 → 周日 16:51 离场
+check('法定假与调休：元旦当天免假，中间工作日只剩真上班的那几天', () => {
+  const H = require(path.join(ROOT, 'scripts', 'holidays'));
+  const cal = H.resolve({ years: [2027], calendar: 'CN' });
+  assert.ok(cal.enabled, 'calendar:CN 应启用日历');
+  const rule = { ...RULE, cal: cal.set };
+  // 2027-01-01 是周五，按惯例与周末连休 3 天 → 元旦出发不算年假
+  assert.strictEqual(G.leaveOfOut(at('2027-01-01', 6, 0), rule), 0, '元旦当天出发不算年假');
+  // 不带日历时同一时刻要算 1 天（旧口径），这是「同步前 skill 会算错」的那条
+  assert.strictEqual(G.leaveOfOut(at('2027-01-01', 6, 0), RULE), 1, '不带日历应退回工作日口径');
+  // 12/31 晚出发 → 1/5 早上到：中间 1/1–1/3 是假，只剩 1/4 要请
+  assert.strictEqual(G.midWorkdays(at('2026-12-31', 20, 0), at('2027-01-05', 10, 0), rule), 1,
+    '含元旦假期应只算 1 天');
+  assert.strictEqual(G.midWorkdays(at('2026-12-31', 20, 0), at('2027-01-05', 10, 0), RULE), 2,
+    '不带日历会多算 1 天');
+});
+
+check('同类接驳合并：标签跟随模式，有直连支配边时整条丢弃', () => {
+  const mk = (from, to, mode, cost, km) => ({
+    from, to, mode, scheduled: false, dep: 0, arr: 10, durMin: 10, waitMin: 0, cost, km, via: [],
+  });
+  const empty = new Map([['A', []], ['B', []]]);
+  const r = G.mergeGround(mk('A', 'B', 'taxi', 30, 12), mk('B', 'C', 'taxi', 20, 8), 25, empty);
+  assert.ok(r.merged, '连续两段打车应合并');
+  assert.strictEqual(r.merged.to, 'C');
+  assert.strictEqual(r.merged.cost, 50);
+  assert.strictEqual(r.merged.km, 20);
+  assert.strictEqual(r.merged.ref, '合并打车');
+  // 标签不能写死「打车」：接驳被合并时要叫「合并雪场接驳」
+  const s = G.mergeGround(mk('A', 'B', 'shuttle', 10, 5), mk('B', 'C', 'shuttle', 10, 5), 20, empty);
+  assert.strictEqual(s.merged.ref, '合并雪场接驳', '标签应跟随模式');
+  // 网络里本来就有更便宜更快的直连边 → 这条链严格被支配，整条丢掉
+  const adj = new Map([['A', [{ to: 'C', mode: 'taxi', scheduled: false, durMin: 12, waitMin: 0, cost: 40 }]], ['B', []]]);
+  const d = G.mergeGround(mk('A', 'B', 'taxi', 30, 12), mk('B', 'C', 'taxi', 20, 8), 25, adj);
+  assert.strictEqual(d.drop, true, '有直连支配边时应丢弃整条链');
+});
+
+check('雪时跨日累计，夜场按权重折算', () => {  // 周六 09:32 到场 → 周日 16:51 离场
   const h = G.snowHours(at('2026-11-28', 9, 32), at('2026-11-29', 16, 51), RES);
   assert.strictEqual(h.hDay, 14.97, '日场应 6.97 + 8');
   assert.strictEqual(h.hNight, 3, '只有周六夜场');
@@ -423,8 +467,15 @@ check('汇报页：全部年假在首位、各档最优横排、含趋势折线�
   assert.ok(html.indexOf('全部年假') > -1, '缺「全部年假」页');
   assert.ok(html.indexOf('各档最优') > -1, '缺「各档最优」区块');
   assert.ok(/<svg[\s\S]*元\/雪日/.test(html), '缺趋势折线图');
-  const plainTabs = (html.match(/class="tab"/g) || []).length;
-  assert.strictEqual(plainTabs, e2eTop.buckets.length, 'Tab 数应等于档位数（首位那个带 on）');
+  // 只数页签栏里的按钮：整页里还内嵌着 algo/render.js 源码，那串 '<button class="tab"'
+  // 会被整页正则误命中（引擎源码一旦变成内嵌载荷，这个坑就出现了）。
+  const barAt = html.indexOf('<div class="tabs">');
+  assert.ok(barAt > -1, '缺页签栏');
+  const bar = html.slice(barAt, html.indexOf('</div>', barAt));
+  const nTab = (bar.match(/data-k="/g) || []).length;
+  assert.strictEqual(nTab, e2eTop.buckets.length + 1,
+    '页签数应等于「全部年假」+ 档位数，实际 ' + nTab + ' / 档位 ' + e2eTop.buckets.length);
+  assert.ok(/class="tab on"/.test(bar), '首位页签应带 on');
 });
 
 check('hover 明细里的打车段标出里程（结构化 km 与备注兜底都要认）', () => {
@@ -763,7 +814,11 @@ function fakeCall(truncatedOnFirstCall) {
 
   /** 相对今天的日期，落在预售期内 */
   function futureDate(days) {
-    return new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
+    // 必须按**本地**日期拼串：toISOString() 是 UTC，北京时间 00:00–08:00 之间
+    // 会算成前一天，预售期校验直接报「距今天 -1 天」（跨零点跑测试就会踩到）。
+    const d = new Date(Date.now() + days * 86400000);
+    const p = (n) => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
   }
 
   /** 假 fetch：记录每次调用的时间戳，按队列返回预置响应 */
@@ -879,6 +934,54 @@ function fakeCall(truncatedOnFirstCall) {
     assert.strictEqual(by('A', 'B').ref, 'X', '具体车次仍留在 ref，供 hover 明细用');
     assert.strictEqual(by('A', 'B').serviceFrom, 420, '首末班窗口要传到边上');
   });
+
+  // ── 8. 缓存索引：写入即索引、删除即摘除、index.json 不当条目 ────────────
+  console.log('\n缓存索引');
+  {
+    const dir = path.join(TMP, 'cache-idx');
+    fs.mkdirSync(dir, { recursive: true });
+    // 单独起进程：cache.js 的目录是进程内 memo 化的，不能污染主进程
+    const child = path.join(dir, 'probe.js');
+    fs.writeFileSync(child, [
+      'const cache = require(' + JSON.stringify(path.join(ROOT, 'scripts', 'cache')) + ');',
+      'const fs = require("fs");',
+      "const sql = \"SELECT '2026-12-11|SZX-BJS' AS tag FROM flights(market := 'domestic', legs := [{'dep_city':'SZX','arr_city':'BJS','date':'2026-12-11'}], cabin := 'economy')\";",
+      'const raw = JSON.stringify({ item: { data: { truncated: false, row_count: 2, source_count: 40, rows: [',
+      "  { tag: '2026-12-11|SZX-BJS', transfers: 0, adult_total: 900, dep_ap: 'SZX', arr_ap: 'PEK' },",
+      "  { tag: '2026-12-11|SZX-BJS', transfers: 1, adult_total: 820, dep_ap: 'SZX', arr_ap: 'PKX' }] } } });",
+      "const key = cache.keyOf('getFlightTicketPrice', { sql });",
+      'cache.write({ schema: cache.SCHEMA, key, tool: "getFlightTicketPrice", args: { sql }, sql,',
+      "  label: 'SZX→BJS 12-11', createdAt: new Date().toISOString(), ok: true, error: null,",
+      '  truncated: false, rowCount: 2, sourceCount: 40, raw });',
+      'const e = cache.readIndex().entries[key];',
+      'console.log(JSON.stringify({ airports: e.coverage.airports, dates: e.coverage.dates,',
+      '  cities: e.coverage.cities, cheapest: e.coverage.perDate["2026-12-11"].cheapest,',
+      '  byRoute: Object.keys(cache.readIndex().byRoute), md: fs.existsSync(cache.indexMdPath()),',
+      '  ttl: cache.DEFAULT_TTL_MINUTES }));',
+      'cache.remove(key);',
+      'console.log(JSON.stringify({ stillThere: Boolean(cache.readIndex().entries[key]),',
+      '  listed: cache.list().length }));',
+      '',
+    ].join('\n'), 'utf8');
+    const r = spawnSync(process.execPath, [child], {
+      env: Object.assign({}, process.env, { SKI_CACHE_DIR: dir }), encoding: 'utf8',
+    });
+    assert.ok(!r.status, '子进程失败：' + (r.stderr || ''));
+    const [first, second] = (r.stdout || '').trim().split('\n').map((l) => JSON.parse(l));
+    check('缓存写入后索引跟上：机场 / 日期 / 城市 / 最低价 / 航线总览', () => {
+      assert.deepStrictEqual(first.airports, ['PEK', 'PKX', 'SZX'], '机场要按字母序去重');
+      assert.deepStrictEqual(first.dates, ['2026-12-11']);
+      assert.deepStrictEqual(first.cities, ['BJS', 'SZX']);
+      assert.strictEqual(first.cheapest, 820, '最低价取含税价最小的那条');
+      assert.ok(first.byRoute.indexOf('SZX->BJS') > -1, 'byRoute 要按 O-D 汇总');
+      assert.ok(first.md, 'index.md 要跟着一起生成');
+      assert.strictEqual(first.ttl, 1440, '默认新鲜期应为 24 小时，实际 ' + first.ttl);
+    });
+    check('缓存删除后索引同步摘除，且 index.json 不被当成条目', () => {
+      assert.strictEqual(second.stillThere, false, '删除条目后索引里不能留残影');
+      assert.strictEqual(second.listed, 0, 'list() 不该把 index.json 算成缓存条目');
+    });
+  }
 
   fs.rmSync(TMP, { recursive: true, force: true });
   console.log(process.exitCode ? '\n失败' : '\n全部通过（' + pass + ' 项）');

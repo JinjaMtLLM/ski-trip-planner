@@ -69,9 +69,9 @@ function snowWindows(startAbs, endAbs, R) {
   const out = [];
   if (!(endAbs > startAbs)) return out;
   // 某一天的日场只捞到一小段，实际不可用：换鞋、存包、热身都不止这个时间。
-  // 低于阈值整天记 0（夜场不受影响，夜里上山是另一回事）。默认 2.5h，可用
+  // 低于阈值整天记 0（夜场不受影响，夜里上山是另一回事）。默认 3h，可用
   // resort.minDayH 覆盖；写 0 就退回旧口径（有一分钟算一分钟）。
-  const minDayH = R.minDayH == null ? 2.5 : Number(R.minDayH);
+  const minDayH = R.minDayH == null ? 3 : Number(R.minDayH);
   const minDayMin = minDayH * 60;
   for (let d = dayOf(startAbs); d <= dayOf(endAbs); d++) {
     if (d < seasonFrom || d > seasonTo) continue;
@@ -101,10 +101,28 @@ function snowHours(startAbs, endAbs, R) {
 }
 
 // ---------------------------------------------------------------- 年假
+/**
+ * 这一天对上班族来说上不上班。
+ *
+ * CAL = { holidays:Set<dayNum>, workdays:Set<dayNum> }，由 holidays.js 解析后
+ * 挂在 RULE.cal 上传进来。两处判断顺序不能反：
+ *   1. workdays 先判 —— 调休上班日可能本来落在周六日，必须先盖掉「周末免假」；
+ *   2. holidays 次判 —— 法定假可能落在工作日，要盖掉「工作日要请假」。
+ * 不传 CAL 时退回「只有周六日免假」的旧口径，老案例（如日本雪场）行为不变。
+ */
+function isFreeDay(d, CAL) {
+  if (CAL) {
+    if (CAL.workdays && CAL.workdays.has(d)) return false;
+    if (CAL.holidays && CAL.holidays.has(d)) return true;
+  }
+  const w = wdOf(d);
+  return w === 0 || w === 6;
+}
+
 /** 出发端：工作日「下班后起飞不算、半天分界后算半天、否则一整天」 */
 function leaveOfOut(firstDepAbs, RULE) {
   const d = dayOf(firstDepAbs), t = firstDepAbs - d * DAY;
-  if (wdOf(d) === 0 || wdOf(d) === 6) return 0;
+  if (isFreeDay(d, RULE && RULE.cal)) return 0;
   if (t >= hhmm(RULE.dayEnd)) return 0;
   if (t >= hhmm(RULE.halfDayAt)) return 0.5;
   return 1;
@@ -117,17 +135,16 @@ function leaveOfOut(firstDepAbs, RULE) {
  */
 function leaveOfRet(lastArrAbs, RULE) {
   const d = dayOf(lastArrAbs), t = lastArrAbs - d * DAY;
-  if (wdOf(d) === 0 || wdOf(d) === 6) return 0;
+  if (isFreeDay(d, RULE && RULE.cal)) return 0;
   if (t <= hhmm(RULE.dayStart)) return 0;
   if (t <= hhmm(RULE.halfDayAt)) return 0.5;
   return 1;
 }
-/** 中间被整段占掉的工作日 */
-function midWorkdays(outAbs, retAbs) {
+/** 中间被整段占掉的工作日（含被调休占用的周末） */
+function midWorkdays(outAbs, retAbs, RULE) {
   let c = 0;
   for (let d = dayOf(outAbs) + 1; d < dayOf(retAbs); d++) {
-    const w = wdOf(d);
-    if (w >= 1 && w <= 5) c++;
+    if (!isFreeDay(d, RULE && RULE.cal)) c++;
   }
   return c;
 }
@@ -215,15 +232,18 @@ function dfsPaths(adj, src, dst, opts) {
       } else {
         // 即到即走：dep 记「到站时刻」，等车时间算在行程里。
         // 带服务时间窗的（日本电车按平均候车估算）：上车时刻落在窗外就顺延到首班/末班。
+        // windowHard=true 表示「整段都得跑在窗口内」——阿勒泰那种白天限行的山路用这个，
+        // 否则会出现「18:15 出发、夜里跑 5 小时」这种名义合规、实际违规的解。
         let ready = t;
         const wait = g.waitMin || 0;
         if (g.serviceFrom != null || g.serviceTo != null) {
           const from = g.serviceFrom == null ? 0 : g.serviceFrom;
           const to = g.serviceTo == null ? DAY : g.serviceTo;
+          const tail = g.windowHard ? wait + g.durMin : 0;
           const b = ready + wait;
           const bd = Math.floor(b / DAY), bt = b - bd * DAY;
-          if (bt > to) ready = (bd + 1) * DAY + from - wait;       // 已收班：等次日首班
-          else if (bt < from) ready = bd * DAY + from - wait;      // 首班未开：等当日首班
+          if (bt > to - tail) ready = (bd + 1) * DAY + from - wait;       // 跑不完 / 已收班：等次日首班
+          else if (bt < from) ready = bd * DAY + from - wait;             // 首班未开：等当日首班
         }
         dep = ready; arr = ready + wait + g.durMin;
       }
@@ -278,10 +298,11 @@ function retimeReturn(legs) {
     if (g.serviceFrom != null || g.serviceTo != null) {
       const from = g.serviceFrom == null ? 0 : g.serviceFrom;
       const to = g.serviceTo == null ? DAY : g.serviceTo;
+      const tail = g.windowHard ? wait + g.durMin : 0;
       const b = dep + wait;
       const bd = Math.floor(b / DAY), bt = b - bd * DAY;
-      if (bt > to) dep = bd * DAY + to - wait;
-      else if (bt < from) dep = (bd - 1) * DAY + to - wait;
+      if (bt > to - tail) dep = bd * DAY + (to - tail) - wait;
+      else if (bt < from) dep = (bd - 1) * DAY + (to - tail) - wait;
     }
     legs[i] = { ...g, dep, arr: dep + wait + g.durMin };
     t = dep;
@@ -337,7 +358,7 @@ function prunePaths(paths, dir, cfg) {
 }
 
 module.exports = {
-  DAY, dayOf, wdOf, hhmm,
+  DAY, dayOf, wdOf, hhmm, isFreeDay,
   nightStates, snowHours, snowWindows, leaveOfOut, leaveOfRet, midWorkdays,
-  buildGraph, dfsPaths, retimeReturn, summarize, prunePaths,
+  buildGraph, dfsPaths, retimeReturn, summarize, prunePaths, mergeGround,
 };
