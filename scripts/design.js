@@ -88,6 +88,12 @@ function css(o) {
     + '.costcell,.lodgecell,.cbar{cursor:help}'
     + '.lodgecell:hover{color:#1d4ed8}'
     + '.costcell:hover,.cbar:hover{color:#1d4ed8}'
+    // 可排序表头：整格可点，箭头只在 hover / 激活时明显，避免默认状态下满屏箭头
+    + 'th.s{cursor:pointer;user-select:none}'
+    + 'th.s:hover{color:#16181d;background:#f2f4f7}'
+    + 'th.s .si{margin-left:4px;color:#cfd4dc;font-size:10px;font-weight:400}'
+    + 'th.s:hover .si{color:#98a0ad}'
+    + 'th.s.on{color:#1d4ed8}th.s.on .si{color:#1d4ed8;font-weight:700}'
     + '.rt{font-size:11px;line-height:1.7;min-width:172px;cursor:help}'
     + '.chain{display:block;white-space:nowrap;color:#16181d;letter-spacing:.1px}'
     + '.refs{display:block;white-space:nowrap;color:#a0a7b3;font-size:10px;margin-top:1px;font-variant-numeric:tabular-nums;letter-spacing:.15px}'

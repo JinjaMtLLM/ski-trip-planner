@@ -393,7 +393,7 @@ node scripts/planner.js config.json --csv
 | **单场次报告** | `scripts/render.js` + `design.js` | 一个雪场一个窗口。版式写死在渲染器里，换雪场只换 `case.json`，**不要改渲染代码** |
 | **多场次对比页（页签版）** | `python templates/season-page/build.py` | 多个场次 / 多个雪场放一页。sticky 页签 + 概览面板 + 每场次一个惰性 iframe + 全部算例原始数据 |
 
-单场次报告的结构契约（改渲染器时不能破）：页头口径摘要 → 各档最优卡片 → SVG 三线趋势图 → `全部年假` + 各档页签 → 明细表（列序固定）→ 页脚口径与数据时效 → `<!--RAW-DATA-BEGIN-->` 内嵌原始数据与 `#raw-manifest`。
+单场次报告的结构契约（改渲染器时不能破）：页头口径摘要 → 各档最优卡片 → SVG 三线趋势图 → `全部年假` + 各档页签 → 明细表（列序固定，出发 / 入场 / 离场 / 回起点 / 雪时 / 住宿 / 总花费 / 元/雪日 八列可点表头排序，同值按元/雪日升序）→ 页脚口径与数据时效 → `<!--RAW-DATA-BEGIN-->` 内嵌原始数据与 `#raw-manifest`。
 
 页签版是**一条命令**：`python templates/season-page/build.py`（换配置就 `build.py my-season.json`，另有两个开关 `--no-collect` / `--no-verify`）。它按死顺序跑 collect → 出壳 → attach → 回填载荷 → 六节校验，不全绿就退出非零。**换雪季/换雪场只改 `templates/season-page/season.config.json`**，四个生成器都不用碰。**必须先 attach 再回填载荷占位符**，否则载荷里的字面量 `</body>` 会抢走 `lastIndexOf('</body>')`。三条铁律（`escClose` / `unescClose` 逆序、读文件 `newline=''`、只改生成器）与配置字段表写在 `templates/README.md` 里。
 

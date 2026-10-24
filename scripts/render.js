@@ -256,7 +256,9 @@ function flightCost(it) {
 
 function table(list) {
   // 次行是「时刻 + 动作词」：读表时不用回头对照表头就知道 09:32 是入场还是离场
-  const dateCell = (a, act) => '<td class="mono">' + md(a) + ' <span class="dim">' + wd(a) + '</span><br>'
+  // col + data-v 给前端排序用：v 是原始数值（分钟 / 小时 / 元），不是显示文本
+  const dateCell = (a, act, col) => '<td class="mono" data-col="' + col + '" data-v="' + a + '">'
+    + md(a) + ' <span class="dim">' + wd(a) + '</span><br>'
     + '<span class="dim">' + hm(a) + ' ' + act + '</span></td>';
   return list.map((it) => {
     const flags = (it.flags || []).map((f) => '<span class="fl">' + f + '</span>').join('');
@@ -264,19 +266,19 @@ function table(list) {
     const air = flightCost(it);
     return '<tr data-leave="' + it.leave + '" data-perday="' + it.perDay + '" data-h="' + it.hEff + '">'
       + '<td>' + badge(it.leave) + '</td>'
-      + dateCell(it.outFirst, '出发')
-      + dateCell(it.arriveResort, '入场')
+      + dateCell(it.outFirst, '出发', 'out')
+      + dateCell(it.arriveResort, '入场', 'arr')
       + routeBlock(it, 'out', 'td', 'rt')
-      + dateCell(it.leaveResort, '离场')
+      + dateCell(it.leaveResort, '离场', 'leave')
       + routeBlock(it, 'ret', 'td', 'rt')
-      + dateCell(it.backHome, '到达')
-      + '<td class="num hcell" data-tipkey="' + snowKey(it) + '"><b>' + it.hEff + '</b>'
+      + dateCell(it.backHome, '到达', 'back')
+      + '<td class="num hcell" data-col="h" data-v="' + it.hEff + '" data-tipkey="' + snowKey(it) + '"><b>' + it.hEff + '</b>'
       + '<br><span class="dim">日' + it.hDay + ' 夜' + it.hNight + '</span></td>'
-      + '<td class="num lodgecell" data-tipkey="' + ck + '">¥' + it.lodge
+      + '<td class="num lodgecell" data-col="lodge" data-v="' + it.lodge + '" data-tipkey="' + ck + '">¥' + it.lodge
       + '<br><span class="dim">雪场' + it.resortN + ' 中转' + it.hotelN + '</span></td>'
-      + '<td class="num costcell" data-tipkey="' + ck + '">¥' + it.total
+      + '<td class="num costcell" data-col="total" data-v="' + it.total + '" data-tipkey="' + ck + '">¥' + it.total
       + '<br><span class="dim">\u2708 \uffe5' + air + '</span></td>'
-      + '<td class="num price">¥' + it.perDay + '</td>'
+      + '<td class="num price" data-col="perday" data-v="' + it.perDay + '">¥' + it.perDay + '</td>'
       + '<td class="flcell">' + flags + '</td>'
       + '</tr>';
   }).join('');
@@ -321,21 +323,35 @@ function trendChart() {
 
 const ALL = BUCKETS.reduce((a, b) => a.concat(topData.top[b] || []), []).sort((a, b) => a.perDay - b.perDay);
 
+// 可排序表头：key 与 <td data-col> 对应；width 沿用原来的固定宽度，避免点一下就抖动
+const sortTh = (key, label, cls, width, dir) =>
+  '<th class="s' + (cls ? ' ' + cls : '') + (dir ? ' on' : '') + '" data-sort="' + key + '"'
+  + (dir ? ' data-dir="' + dir + '"' : '') + ' style="width:' + width + 'px">' + label
+  + '<span class="si">' + (dir === 'asc' ? '↑' : dir === 'desc' ? '↓' : '↕') + '</span></th>';
+
 function panelOf(k, title, meta, list, on) {
   return '<div class="panel' + (on ? ' on' : '') + '" id="p-' + k + '">'
     + '<div class="phead"><h2>' + title + '</h2>'
     + '<span class="pmeta">' + meta + '</span></div>'
     + '<table class="tbl"><thead><tr>'
-    + '<th style="width:64px">年假</th><th style="width:74px">出发</th><th style="width:74px">入场</th>'
-    + '<th>去程路径</th><th style="width:74px">离场</th>'
-    + '<th>返程路径</th><th style="width:74px">回' + nodeName(cfg.origin) + '</th>'
-    + '<th class="num" style="width:80px">雪时</th><th class="num" style="width:88px">住宿</th>'
-    + '<th class="num" style="width:104px">总花费</th><th class="num" style="width:70px">元/雪日</th>'
+    + '<th style="width:64px">年假</th>'
+    + sortTh('out', '出发', '', 74)
+    + sortTh('arr', '入场', '', 74)
+    + '<th>去程路径</th>'
+    + sortTh('leave', '离场', '', 74)
+    + '<th>返程路径</th>'
+    + sortTh('back', '回' + nodeName(cfg.origin), '', 74)
+    + sortTh('h', '雪时', 'num', 80)
+    + sortTh('lodge', '住宿', 'num', 88)
+    + sortTh('total', '总花费', 'num', 104)
+    // 默认顺序就是元/雪日升序，所以这一列开局即标为激活
+    + sortTh('perday', '元/雪日', 'num', 70, 'asc')
     + '<th style="width:96px">备注</th>'
     + '</tr></thead><tbody>' + table(list) + '</tbody></table></div>';
 }
 
-const META = '按「元 / 等效雪日」升序　等效雪日 = 有效雪时 ÷ ' + SESSION + 'h';
+const META = '按「元 / 等效雪日」升序　等效雪日 = 有效雪时 ÷ ' + SESSION + 'h'
+  + '　·　点表头可改排序，同值时按元/雪日升序';
 const tabs = '<button class="tab on" data-k="all">全部年假</button>'
   + BUCKETS.map((b) => '<button class="tab" data-k="' + b + '">' + b + ' 天年假</button>').join('');
 const panels = panelOf('all', '全部年假档 · 共 ' + ALL.length + ' 名', META, ALL, true)
@@ -347,6 +363,45 @@ const panels = panelOf('all', '全部年假档 · 共 ' + ALL.length + ' 名', M
 const stepBox = (n, t, d) => '<div class="step"><div class="sn">' + n + '</div><div class="st">' + t + '</div><div class="sd">' + d + '</div></div>';
 
 const totalCombos = (topData.totalCombos || 0);
+
+// ---------------------------------------------------------------- 表头排序
+// 每张表独立排序：点一次升序，再点降序。排序值取自 <td data-v> 的原始数字，
+// 不从显示文本里反解（「¥1,234」和「21.5 小时」解析方式不同，且会丢精度）。
+// 同值时一律按元/雪日升序兜底——否则同一天出发的十几行会保持原顺序，看起来像没排。
+const SORT_JS = `
+(function(){
+  function val(row,key){
+    var c=row.querySelector('[data-col="'+key+'"]');
+    var v=c?parseFloat(c.getAttribute('data-v')):NaN;
+    return isNaN(v)?0:v;
+  }
+  function sortBy(th){
+    var table=th.closest('table'),tb=table.tBodies[0],key=th.getAttribute('data-sort');
+    var dir=th.getAttribute('data-dir')==='asc'?'desc':'asc';
+    Array.prototype.forEach.call(table.querySelectorAll('th[data-sort]'),function(o){
+      if(o!==th){
+        o.removeAttribute('data-dir');
+        o.classList.remove('on');
+        o.querySelector('.si').textContent='↕';
+      }
+    });
+    th.setAttribute('data-dir',dir);
+    th.classList.add('on');
+    th.querySelector('.si').textContent=(dir==='asc'?'↑':'↓');
+    var rows=Array.prototype.slice.call(tb.rows);
+    rows.sort(function(a,b){
+      var va=val(a,key),vb=val(b,key);
+      if(va!==vb)return dir==='asc'?va-vb:vb-va;
+      return val(a,'perday')-val(b,'perday');
+    });
+    for(var i=0;i<rows.length;i++)tb.appendChild(rows[i]);
+  }
+  Array.prototype.forEach.call(document.querySelectorAll('th[data-sort]'),function(th){
+    th.addEventListener('click',function(){sortBy(th);});
+  });
+})();
+`;
+
 const html = '<!DOCTYPE html>\n<html lang="zh-CN"><head><meta charset="utf-8"><title>' + cfg.title + ' · 路径枚举报告</title><style>'
   + D.css({cardCols: Math.max(BUCKETS.length, 1)})
   + '</style></head><body><div class="wrap">'
@@ -425,6 +480,7 @@ const html = '<!DOCTYPE html>\n<html lang="zh-CN"><head><meta charset="utf-8"><t
   + 'document.querySelectorAll(".tab").forEach(function(t){t.onclick=function(){'
   + 'document.querySelectorAll(".tab").forEach(function(x){x.classList.toggle("on",x===t)});'
   + 'document.querySelectorAll(".panel").forEach(function(p){p.classList.toggle("on",p.id==="p-"+t.dataset.k)});};});'
+  + SORT_JS
   + D.tipRuntime(TIPS)
   + '<\/script></body></html>';
 

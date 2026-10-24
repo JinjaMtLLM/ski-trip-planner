@@ -88,6 +88,7 @@ want = {t[0]: t[2] for t in BA.TABS}
 if set(embs) != set(want):
     bad('页签集合不符：%s vs %s' % (sorted(embs), sorted(want)))
 _e = True
+SORT_COLS = ['out', 'arr', 'leave', 'back', 'h', 'lodge', 'total', 'perday']
 for sid, d in want.items():
     if sid not in embs:
         continue
@@ -98,6 +99,11 @@ for sid, d in want.items():
         _e = False
     elif '<!DOCTYPE html>' not in got:
         bad('%s 还原后不像一份完整报告' % sid)
+        _e = False
+    # 明细表的八列排序能力是交付契约的一部分，缺一个就说明渲染器退化了
+    miss = [c for c in SORT_COLS if ('data-col="%s"' % c) not in src]
+    if miss:
+        bad('%s 明细表缺可排序列：%s' % (sid, ', '.join(miss)))
         _e = False
 if _e:
     good('%d 份载荷逐字还原一致（%.1f MB）' % (len(embs), sum(len(v.encode()) for v in embs.values()) / 1048576))
