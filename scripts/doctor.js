@@ -34,8 +34,13 @@ const WENDAO_ENDPOINT = 'https://externalcallback.ctrip.com/skills/api/crew/skil
 /** 缓存目录与条目数：让用户知道「为什么这次没扣分」或「旧数据存在哪」 */
 function cacheStatus() {
   const dir = cache.cacheDir();
-  if (!dir) return { dir: '', entries: 0 };
-  return { dir, entries: cache.list().length };
+  if (!dir) return { dir: '', entries: 0, index: null };
+  const idx = cache.readIndex();
+  return {
+    dir,
+    entries: cache.list().length,
+    index: idx ? { updatedAt: idx.updatedAt, routes: Object.keys(idx.byRoute).length } : null,
+  };
 }
 
 const INFOCODE = {
@@ -198,7 +203,10 @@ async function main() {
       console.log(' '.repeat(20) + mark + r.probe.detail);
     }
   }
-  console.log(padEnd('缓存', 20) + (cs.dir ? cs.entries + ' 条 · ' + cs.dir : '不可写，已关闭'));
+  console.log(padEnd('缓存', 20) + (cs.dir
+    ? cs.entries + ' 条 · ' + cs.dir
+      + (cs.index ? ' · 索引 ' + cs.index.routes + ' 条航线' : ' · ⚠ 无索引，跑 cache.js reindex')
+    : '不可写，已关闭'));
   console.log('');
 
   if (!requiredOk) {

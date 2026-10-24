@@ -54,7 +54,7 @@
  * 缓存（查询很贵，重跑不该再花一次钱）：
  *   --no-cache                 不读也不写缓存，强制真查
  *   --refresh                  无视缓存直接查，成功后覆盖
- *   --cache-ttl <分钟>         缓存新鲜期，默认 360（6 小时）；超期在正常模式下重查
+ *   --cache-ttl <分钟>         缓存新鲜期，默认 1440（24 小时）；超期在正常模式下重查
  *   --cache-dir <目录>         指定缓存目录，等价于设 SKI_CACHE_DIR
  *   原始结果落盘在 <技能根>/.cache/<key>.json；维护见 node scripts/cache.js list|prune|clear
  *
@@ -68,6 +68,7 @@
 const fs = require('fs');
 const { tokenSource } = require('./variflight');
 const { queryFlights, leaveWindow, planBatches, VariflightError } = require('./variflight');
+const cache = require('./cache');
 const journal = require('./journal');
 const mcpJson = require('./mcp_json');
 
@@ -100,7 +101,7 @@ const CACHE_DIR = getArg('cache-dir');
 if (CACHE_DIR) process.env.SKI_CACHE_DIR = CACHE_DIR;
 const CACHE = {
   mode: hasFlag('no-cache') ? 'off' : hasFlag('refresh') ? 'refresh' : 'auto',
-  ttlMinutes: Number(getArg('cache-ttl', 360)),
+  ttlMinutes: Number(getArg('cache-ttl', cache.DEFAULT_TTL_MINUTES)),
 };
 if (!Number.isFinite(CACHE.ttlMinutes) || CACHE.ttlMinutes < 0) {
   die('--cache-ttl 需为不小于 0 的分钟数', '例：--cache-ttl 60');
