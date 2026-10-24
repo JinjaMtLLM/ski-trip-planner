@@ -9,7 +9,7 @@
     python tools/package.py -o /tmp/dist    # 指定输出目录
 
 原则：从「被 git 跟踪的文件 + 未被忽略的新文件」里按白名单取
-（SKILL.md / LICENSE / scripts/ / references/），并以 skill 名
+（SKILL.md / LICENSE / scripts/ / references/ / templates/），并以 skill 名
 （取自 SKILL.md frontmatter）作为 zip 内的顶层目录。
 """
 
@@ -22,13 +22,13 @@ import zipfile
 from pathlib import Path
 
 # 仅开发期使用、不该出现在分发产物里的文件与前缀
-EXCLUDE_PREFIXES = ("tools/",)
+EXCLUDE_PREFIXES = ("tools/", "templates/season-page/legacy/")
 EXCLUDE_FILES = {".gitignore", ".gitattributes", "README.md"}
 
 # 分发产物只允许这些入口：白名单之外的文件（本地 config、检索产物、
 # 测试快照等）一律不进包，避免开发目录里的临时文件被顺手打进去。
 ALLOW_FILES = {"SKILL.md", "LICENSE"}
-ALLOW_PREFIXES = ("scripts/", "references/")
+ALLOW_PREFIXES = ("scripts/", "references/", "templates/")
 
 
 def skill_name_of(root: Path) -> str:
