@@ -62,11 +62,11 @@ _b = ok
 if _b:
     good('%d 个块三方一致（内容 ↔ data-bytes/sha256 ↔ 清单）' % len(blocks))
 
-# 清单里的算例目录都要真实存在，且 13 个
+# 清单里的算例目录都要真实存在，且个数与配置里的页签数一致
 cases = [c['prefix'] for c in man['cases']]
 print('   cases: %d → %s' % (len(cases), ', '.join(cases)))
-if len(cases) != 13:
-    bad('算例数应为 13，实际 %d' % len(cases))
+if len(cases) != len(BA.TABS):
+    bad('算例数应为 %d（= 页签数），实际 %d' % (len(BA.TABS), len(cases)))
 
 # ---------------------------------------------------------------- 2. 没有裸结束标记
 print('2. text/plain / application/json 块内没有裸 </script')

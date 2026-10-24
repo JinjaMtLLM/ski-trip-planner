@@ -81,7 +81,7 @@ def season_css():
 .tbg{font-size:10.5px;font-weight:700;letter-spacing:.6px;color:#8b98a5;
  padding:0 3px 0 9px;align-self:center;white-space:nowrap}
 .tbg:first-of-type{padding-left:0}
-/* 两组之间强制换行：13 个页签挤一行会掉一个孤儿到第二行，不如按组整齐断成两行 */
+/* 两组之间强制换行：页签多了以后挤一行会掉一个孤儿到第二行，不如按组整齐断成两行 */
 .tbr{flex:0 0 100%;height:0;margin:0;padding:0}
 .tabbar .tbsep{font-size:11px}
 """
