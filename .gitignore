@@ -3,6 +3,10 @@ node_modules/
 package-lock.json
 yarn.lock
 pnpm-lock.yaml
+# OTA 适配层的 python 环境（scripts/ota/cli.js 会自动找它）
+.venv*/
+__pycache__/
+*.pyc
 
 # ---- 运行时产物：planner.js 生成的报告 / 数据导出 ----
 *.html
