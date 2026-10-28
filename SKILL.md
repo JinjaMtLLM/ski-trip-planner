@@ -600,5 +600,5 @@ $env:VARIFLIGHT_MCP_KEY = [Environment]::GetEnvironmentVariable('VARIFLIGHT_MCP_
 | `references/intake.md` | 问答脚本：该问什么、选项怎么给、骨架确认卡长什么样 |
 | `references/config-schema.md` | config.json 逐字段说明与可复制骨架 |
 | `references/manual-flights.md` | 手动录入模式：不配任何 key 时怎么收集航班、可直接运行的完整示例、四个易错点 |
-| `references/ota-adapter.md` | **OTA 补数适配层**：submodule 用法与三条禁令、归一字段与含税口径（国内裸价 vs 国际含税）、筛选语义复刻、缓存条目伪造、等价性验证数据、已知局限与排错 |
+| `references/ota-adapter.md` | **OTA 补数适配层**：submodule 用法与四条硬规则、归一字段与含税口径（国内裸价 vs 国际含税）、筛选语义复刻、缓存条目伪造、等价性验证数据、已知局限与排错 |
 | `references/algorithm.md` | 计算模型、边界条件、敏感度检查方法 |
