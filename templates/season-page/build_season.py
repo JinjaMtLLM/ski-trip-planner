@@ -325,7 +325,10 @@ def t_buckets():
                         '<td class="c rc" style="--c:%s"><span class="dot"></span>%s</td>%s</tr>'
                         % (s['label'], esc(s['note'].split(' · ')[0]), COLOR[r['code']], r['name'], ''.join(tds)))
     head = ''.join('<th class="c">%g<div class="sub">天</div></th>' % float(b) for b in BUCKETS)
-    return ('<h2>1. 各场次 · 全年假档 元/雪日</h2>\n'
+    # 行标签可配：雪季页有多窗口叫「各场次」，单窗口对比页只有一行，叫「春节窗口」更贴切
+    _BT = CFG.get('texts', {}).get('bucketTitle') or '各场次'
+    _h2 = '<h2>1. %s · 全年假档 元/雪日</h2>\n' % _BT
+    return (_h2 +
             '<p class="hint">每格是该场次该年假档的最优方案，单位元/雪日（＝总花费 ÷ 等效雪日）。'
             '底色按价格上色，700 以下不填色、700–1,500 连续渐变、1,500 以上深红字（不铺底）。'
             '横着看＝多请假能便宜多少，竖着看＝同一档哪个雪场划算。</p>\n'
@@ -402,10 +405,13 @@ def sections():
 
     # 2) 请假天数 × 元/雪日
     parts.append('<h2>2. 请假天数 × 元/雪日</h2>')
-    parts.append('<p class="hint">横轴请假天数，纵轴元/雪日（越低越划算）。每个点＝该雪场在该假档下'
-                 '<b>所有窗口里最便宜</b>的那个方案，所以一条线就是「这个雪场最多能做到多便宜」。'
-                 '锯齿上翘的几处不是「请假越多越贵」，是那一档只有更贵的窗口查过（例如志贺 4 天以上只有 12/04 开板周）。'
-                 '虚线＝中间缺档没查。粗黑线＝该档七个雪场里的最低价。浅色带是 ¥700–1,500 关注区间，和上表配色一致。</p>')
+    # 说明文字可配：雪季页的例子（志贺、七个雪场）在单窗口对比页里不成立
+    _ch = CFG.get('texts', {}).get('chartHint') or (
+        '横轴请假天数，纵轴元/雪日（越低越划算）。每个点＝该雪场在该假档下'
+        '<b>所有窗口里最便宜</b>的那个方案，所以一条线就是「这个雪场最多能做到多便宜」。'
+        '锯齿上翘的几处不是「请假越多越贵」，是那一档只有更贵的窗口查过（例如志贺 4 天以上只有 12/04 开板周）。'
+        '虚线＝中间缺档没查。粗黑线＝该档七个雪场里的最低价。浅色带是 ¥700–1,500 关注区间，和上表配色一致。')
+    parts.append('<p class="hint">%s</p>' % _ch)
     parts.append('<div class="chart">%s</div>' % build_svg_days())
     parts.append('<div class="legend">%s<span><i style="background:#1f2937;height:4px"></i>全场最低</span>'
                  '<span><i style="background:#f8f5ec;border:1px solid #e6dfcd;height:11px;width:14px"></i>'
@@ -414,13 +420,15 @@ def sections():
                            for r in RES))
 
     # 3) 0 / 1 / 2 天年假档总表
-    parts.append(t_main('0', '3. 雪季总表 · 0 天年假档',
+    # 表名可配：雪季页叫「雪季总表」，单窗口多方案对比页叫「对比总表」更贴切
+    _TL = CFG.get('texts', {}).get('tableLabel') or '雪季总表'
+    parts.append(t_main('0', '3. %s · 0 天年假档' % _TL,
                         '0 天年假 = 不用请假：工作日 %s 之后出发，周末全天出发。'
                         '主数值是元/小时（跨窗口、跨雪场唯一可比的指标），下方小字是元/雪日与等效雪时。'
                         '绿色＝该行最便宜。' % LEAVE.get('dayEnd', '19:30')))
-    parts.append(t_main('1', '4. 雪季总表 · 1 天年假档',
+    parts.append(t_main('1', '4. %s · 1 天年假档' % _TL,
                         '1 天年假 = 周五请一整天，可以坐上午的航班。'))
-    parts.append(t_main('2', '5. 雪季总表 · 2 天年假档',
+    parts.append(t_main('2', '5. %s · 2 天年假档' % _TL,
                         '2 天年假 = 提前两个工作日出发，接上周六日可以凑出 4–5 天雪期。'))
 
     meta = CFG.get('texts', {}).get('meta')

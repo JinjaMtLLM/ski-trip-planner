@@ -156,6 +156,29 @@ function resolve(o) {
     sources.push('手工指定：params.holidays / params.workdays');
   }
 
+  // 手工指定的放假日也要建 period：describe() 只遍历 periods，不建的话报告
+  // 口径区会把「春节」显示成「窗口内无法定假」——2027 春节实报踩过。
+  // 连续日期并成一段，name 取 params.holidaysLabel，缺省「指定假期」。
+  {
+    const days = [...new Set((opt.holidays || []).map(dayNum))].sort((a, b) => a - b);
+    let from = null, to = null;
+    const push = () => {
+      if (from === null) return;
+      periods.push({
+        name: opt.holidaysLabel || '指定假期',
+        from: dateStr(from), to: dateStr(to),
+        year: Number(dateStr(from).slice(0, 4)),
+        source: 'manual',
+      });
+    };
+    for (const d of days) {
+      if (from === null) { from = to = d; continue; }
+      if (d === to + 1) { to = d; continue; }
+      push(); from = to = d;
+    }
+    push();
+  }
+
   // 同一天既标放假日又标上班日 → 以上班日为准，并告警
   for (const w of workdays) {
     if (holidays.has(w)) {
@@ -192,7 +215,8 @@ function describe(cal, fromDate, toDate) {
     return pt >= dayNum(fromDate) && pf <= dayNum(toDate);
   };
   const list = cal.periods.filter(inWin).map((p) =>
-    `${p.name} ${shortLabel(p)}（${p.source === 'official' ? '官方' : '推定'}）`);
+    `${p.name} ${shortLabel(p)}（${p.source === 'official' ? '官方'
+      : (p.source === 'manual' ? '手工指定' : '推定')}）`);
   const wds = cal.workdayList.filter((w) => w.date >= fromDate && w.date <= toDate);
   return {
     holidays: list,

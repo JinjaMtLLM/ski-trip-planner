@@ -107,22 +107,31 @@ function airportOf(code, airline) {
 }
 
 /**
- * 按 tag 找旧条目。
- * 缓存 key 是 SQL 的哈希，SQL 一改（比如这次加机场列）旧条目就再也命不中。
- * 但旧条目里的数据仍然有效，只是缺机场列，所以按 `'YYYY-MM-DD|起点-终点'` 这种 tag 字面量
- * 反查一遍，避免为了补字段把全部航线重查一遍。
+ * 按 (O-D, 日期) 找可复用的旧条目。
+ *
+ * 缓存键是 SQL 的哈希，SQL 模板一改（加机场列、改排名写法、tag 从
+ * 「日期|起点-终点」变成裸日期）旧条目就再也命不中。但数据仍然有效，
+ * 所以按 SQL 里的 legs := [{'dep_city':…,'arr_city':…,'date':…}] 反查：
+ * O-D 一致、且条目覆盖的日期包含本次要查的全部日期，就拿来用
+ * （条目多查几天没关系，取行时按 tag 里的日期过滤）。
+ *
+ * 它只校验航线 + 日期，**不校验取数口径**（perTransfer / perDay / maxStop
+ * 在条目里都看不出来）。所以调用方必须自己按 maxStop 再过一遍——
+ * buildLegs() 里正是这么做的（f.stopMinutes > maxStop 直接丢）。
  */
-function findEntryByTags(dir, q, dates) {
-  if (!dir || !fs.existsSync(dir)) return null;
-  const marks = dates.map((d) => `'${d}|${q.from}-${q.to}'`);
+function findEntryByLegs(dir, q, dates) {
+  const want = new Set(dates);
   let best = null;
   for (const f of fs.readdirSync(dir)) {
-    if (!f.endsWith('.json')) continue;
+    if (!f.endsWith('.json') || f === cache.INDEX_JSON) continue;
     let e;
     try { e = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')); } catch (_) { continue; }
     if (!e.ok || e.tool !== 'getFlightTicketPrice') continue;
-    const sql = String(e.sql || '');
-    if (!marks.every((m) => sql.includes(m))) continue;
+    const legs = cache.parseLegs(e.sql || '');
+    if (!legs.length) continue;
+    if (legs.some((l) => l.from !== q.from || l.to !== q.to)) continue;
+    const have = new Set(legs.map((l) => l.date));
+    if (![...want].every((d) => have.has(d))) continue;
     if (!best || String(e.createdAt) > String(best.createdAt)) best = e;
   }
   return best;
@@ -160,7 +169,7 @@ function flipNote(note) {
       return { key, rows: null, reason: 'bad-cache' };
     }
   } else {
-    entry = findEntryByTags(dir, q, dates);        // 旧 SQL 版本落盘的条目
+    entry = findEntryByLegs(dir, q, dates);        // 旧 SQL 版本落盘的条目
     legacy = Boolean(entry);
     if (!entry) return { key, rows: null, reason: 'no-cache' };
     reason = 'legacy-cache';
@@ -175,8 +184,11 @@ function flipNote(note) {
   const data = (doc && doc.item && doc.item.data) || {};
   const rows = [];
   for (const r of data.rows || []) {
-    // 多日期合并查时，行归属哪一天写在 tag 里（"YYYY-MM-DD|起点-终点"）
+    // 多日期合并查时，行归属哪一天写在 tag 里（"YYYY-MM-DD|起点-终点" 或裸日期）
     const tagDate = String(r.tag || '').split('|')[0];
+    // 兜底复用到的条目可能覆盖更多日期，只取本次要的。否则它余下几天的行会被
+    // 改贴成 dates[0]——同一批航班算到错误的一天上，而且不报错。
+    if (r.tag && !dates.includes(tagDate)) continue;
     const date = dates.includes(tagDate) ? tagDate : dates[0];
     const f = vf.toFlight(r, { from: q.from, to: q.to, date });
     if (f.dep && f.arr) rows.push(f);

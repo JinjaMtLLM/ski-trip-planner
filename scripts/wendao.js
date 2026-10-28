@@ -4,8 +4,11 @@
  * wendao.js — 携程问道请求与解析封装
  *
  * 主流程不经过本文件：机场粗筛与骨架摸底按 references/wendao-prompts.md
- * 直接发原始 HTTP 请求，不封 CLI。本文件留给需要编程调用的场景
- * （例如批量核对航班号、或把问道结果做结构化对比）。
+ * 直接发原始 HTTP 请求。本文件有两种用法：
+ *   1) 编程调用（批量核对航班号、结构化对比）；
+ *   2) **CLI 取原文**（`--from/--to/--date`），供 LLM 按
+ *      references/wendao-fare-watch-runbook.md 现场判读——CLI 只输出原文，
+ *      不做任何解析，parseFlights 不参与。
  * key 仅从环境变量 WENDAO_API_KEY 读取，不接受命令行参数。
  *
  * 解析策略：不依赖返回版式。逐行扫描「HH:MM」判断角色（起飞/到达），
@@ -298,3 +301,73 @@ async function queryFlights(opts) {
 }
 
 module.exports = { WendaoError, search, parseFlights, dedupe, queryFlights, cnDate };
+
+// ---------- CLI：只取原文，不做判读 ----------
+//
+// 判读交给 LLM，按 references/wendao-fare-watch-runbook.md 执行。问道的排版
+// 一天能换十种（2026-10-27 实测），任何正则解析器都会在一周内失效；而
+// 「原文里明摆着写了航班号、时刻、票面价」这件事是稳定的。所以 CLI 只负责
+// 把话问出去、把话原样带回来，parseFlights 不参与。
+//
+//   node scripts/wendao.js --from 阿勒泰 --to 深圳 --date 2027-01-03
+//   node scripts/wendao.js --query "任意问题" --save out/fare-watch/raw
+//
+// stdout = 原文（原样）；stderr = 元信息。退出码 0 成功 / 2 配额 / 3 鉴权 / 4 其他。
+
+/** 票面价巡检的标准问法：主动排除税费——问了它也只回「无法拆分」。 */
+function fareQuery(from, to, date) {
+  return `${cnDate(date)}${from}飞${to}。
+这一天能查到的方案都列一下，直飞和中转都要，只要票面价，税费不用管（我自己算）。
+
+每个方案麻烦写成一段，里面包含：
+- 每一段的航班号、几点起飞、几点落地、在哪个机场；
+- 全程大概多少小时；
+- 这个方案一个人的经济舱票面价多少元。
+
+同一天不同中转城市的方案我都要看，别只挑最便宜的一两个给我。`;
+}
+
+if (require.main === module) {
+  const fs = require('fs');
+  const path = require('path');
+  const argv = process.argv.slice(2);
+  const argOf = (k, d) => {
+    const i = argv.indexOf(k);
+    return i >= 0 && argv[i + 1] ? argv[i + 1] : d;
+  };
+  const from = argOf('--from', '');
+  const to = argOf('--to', '');
+  const date = argOf('--date', '');
+  const query = argOf('--query', '') || (from && to && date ? fareQuery(from, to, date) : '');
+  const saveDir = argOf('--save', '');
+
+  if (!query) {
+    console.error('用法：node scripts/wendao.js --from 阿勒泰 --to 深圳 --date 2027-01-03 [--save out/fare-watch/raw]');
+    console.error('   或：node scripts/wendao.js --query "任意问题"');
+    process.exit(4);
+  }
+
+  (async () => {
+    let text;
+    try {
+      text = await search(query);
+    } catch (e) {
+      console.error(`[error] ${e.kind || 'other'}: ${e.message}`);
+      if (e.hint) console.error(`[hint] ${e.hint}`);
+      process.exit(e.kind === 'quota' ? 2 : e.kind === 'auth' ? 3 : 4);
+    }
+    if (saveDir) {
+      const p = (n) => String(n).padStart(2, '0');
+      const d = new Date();
+      const stamp = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+        + `-${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+      const dir = path.resolve(saveDir);
+      fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, stamp + '.txt');
+      fs.writeFileSync(file, text, 'utf8');
+      console.error(`[saved] ${file}`);
+    }
+    console.error(`[chars] ${text.length}`);
+    process.stdout.write(text.endsWith('\n') ? text : text + '\n');
+  })();
+}

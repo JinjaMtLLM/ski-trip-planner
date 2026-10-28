@@ -80,6 +80,10 @@ python templates/season-page/build.py --no-verify          # 只出页面
 | `tabs[]` | 页签：`id` / `label` / `dir`（算例目录）/ `resort`（决定颜色） |
 | `groups[]` | 页签分组：`label` + `at`（从第几个页签开始），组间强制换行 |
 | `texts` | 页面上的人话：`lead` / `meta[]` / `hint` / `tabNote` / `footer`，留空则用自动生成版 |
+| `texts.tableLabel` | 第 3–5 节表名，默认「雪季总表」；单窗口对比页建议写「对比总表」 |
+| `texts.bucketTitle` | 第 1 节行标签，默认「各场次」；只有一行时可写「春节窗口」 |
+| `texts.overviewLabel` | 概览页签的文字，默认「雪季对比」 |
+| `texts.chartHint` | 第 2 节折线图说明，默认版举了「志贺 / 七个雪场」的例子，换成别的组合必须改写 |
 | `refPage` | 页面上引用另一份交付页时的文件名（只影响文案） |
 | `crossCheck` | 可选：`page` + `alias`，与另一份交付页交叉核对同名载荷是否逐字相同 |
 

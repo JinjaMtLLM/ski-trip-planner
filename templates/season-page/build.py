@@ -37,6 +37,8 @@ def main():
         raise SystemExit('找不到配置：%s' % cfg_path)
 
     cfg = B.load_cfg(cfg_path)
+    # attach.js 是独立进程，要自己读配置；不带路径它会回落到默认 season.config.json
+    cfg['_cfgFile'] = os.path.abspath(cfg_path)
     print('配置 →', cfg_path)
 
     if '--no-collect' not in argv:
@@ -55,7 +57,8 @@ def main():
 
     if '--no-verify' not in argv:
         print('\n校验：')
-        r = subprocess.run([sys.executable, os.path.join(HERE, 'verify_season_all.py')],
+        r = subprocess.run([sys.executable, os.path.join(HERE, 'verify_season_all.py'),
+                            os.path.abspath(cfg_path)],
                            cwd=cfg['root'])
         if r.returncode != 0:
             raise SystemExit('校验未通过')

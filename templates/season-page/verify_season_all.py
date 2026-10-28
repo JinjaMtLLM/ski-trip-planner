@@ -7,8 +7,9 @@ sys.path.insert(0, HERE)
 import build_season as B                                      # noqa: E402
 import build_season_all as BA                                 # noqa: E402
 
-CFG = BA.configure(os.path.join(HERE, 'season.config.json')
-                   if os.path.exists(os.path.join(HERE, 'season.config.json')) else None)
+CFG = BA.configure(next((a for a in sys.argv[1:] if not a.startswith('-')), None)
+                   or (os.path.join(HERE, 'season.config.json')
+                       if os.path.exists(os.path.join(HERE, 'season.config.json')) else None))
 B.configure(CFG)
 ROOT = CFG['root']
 PAGE = os.path.join(ROOT, CFG['out'])
@@ -93,9 +94,11 @@ for sid, d in want.items():
     if sid not in embs:
         continue
     got = BA.unesc_close(embs[sid])
-    src = BA.strip_raw(open(os.path.join(ROOT, d, 'report.html'), encoding='utf-8', newline='').read())
+    _f = BA.TABFILES.get(sid) or os.path.join(ROOT, d, 'report.html')
+    src = BA.strip_raw(open(_f, encoding='utf-8', newline='').read())
     if got != src:
-        bad('%s 还原后与 report.html 不一致（%d vs %d 字符）' % (sid, len(got), len(src)))
+        bad('%s 还原后与 %s 不一致（%d vs %d 字符）'
+            % (sid, os.path.basename(_f), len(got), len(src)))
         _e = False
     elif '<!DOCTYPE html>' not in got:
         bad('%s 还原后不像一份完整报告' % sid)
@@ -175,7 +178,8 @@ D = json.load(open(os.path.join(ROOT, CFG['data']), encoding='utf-8', newline=''
 CELL = D['cells']
 SESS = D['sessions']
 RES = D['resorts']
-BUCKETS = ['0', '0.5', '1', '1.5', '2', '2.5', '3', '3.5', '4', '4.5', '5']
+# 档位必须跟 build_season 用同一份（来自配置），写死会把 17 档的页面判成 11 档
+BUCKETS = BA.B.BUCKETS
 
 # 6a 异常串（只扫概览正文，运行时的 { } 不算）
 for tok in ['NaN', 'undefined', 'Infinity', 'None']:
@@ -184,7 +188,9 @@ for tok in ['NaN', 'undefined', 'Infinity', 'None']:
         bad('概览正文出现 %s x%d' % (tok, n))
 
 # 6b 热力表（置顶）：逐格回查数值 + 底色 + 文字色
-t1 = frag[frag.index('1. 各场次'):frag.index('2. 请假天数')]
+# 章节名跟着配置走（texts.bucketTitle），写死会在改名后找不到切分点
+_BT = CFG.get('texts', {}).get('bucketTitle') or '各场次'
+t1 = frag[frag.index('1. %s' % _BT):frag.index('2. 请假天数')]
 got = re.findall(r'<td class="hm"( style="[^"]*")?>([\d,]+)</td>', t1)
 exp = []
 for s_ in SESS:
@@ -207,9 +213,11 @@ elif len(got) == len(exp):
     good('热力表 %d 格逐格一致（数值 + 底色 + 字色 + 字重），另有 %d 格空档' % (len(got), nd))
 
 # 6c 0/1/2 天三张总表：元/小时 + 元/雪日 + 等效雪时
-SPLIT = [('0', '3. 雪季总表 · 0 天', '4. 雪季总表 · 1 天'),
-         ('1', '4. 雪季总表 · 1 天', '5. 雪季总表 · 2 天'),
-         ('2', '5. 雪季总表 · 2 天', '<div class="meta">')]
+# 表名跟着配置走（texts.tableLabel），写死会在改名后找不到切分点
+_TL = CFG.get('texts', {}).get('tableLabel') or '雪季总表'
+SPLIT = [('0', '3. %s · 0 天' % _TL, '4. %s · 1 天' % _TL),
+         ('1', '4. %s · 1 天' % _TL, '5. %s · 2 天' % _TL),
+         ('2', '5. %s · 2 天' % _TL, '<div class="meta">')]
 for b, a0, a1 in SPLIT:
     seg = frag[frag.index(a0):frag.index(a1)]
     got = re.findall(r'<td class="c[^"]*"><b>¥([\d,]+)</b><div class="sub">([\d,]+)/雪日 · ([\d.]+)h</div></td>', seg)

@@ -983,6 +983,86 @@ function fakeCall(truncatedOnFirstCall) {
     });
   }
 
+  // ── 9. 缓存兜底：SQL 模板变了也按 (O-D, 日期) 找回旧条目 ─────────────
+  console.log('\n缓存兜底匹配');
+  {
+    const dir = path.join(TMP, 'cache-legs');
+    const cdir = path.join(dir, 'c');
+    fs.mkdirSync(cdir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'network.json'), JSON.stringify({
+      schema: 1,
+      nodes: {
+        SZX: { name: '深圳宝安', short: 'SZX', kind: 'airport' },
+        CGQ: { name: '长春龙嘉', short: 'CGQ', kind: 'airport' },
+        R: { name: '雪场', short: 'R', kind: 'resort' },
+      },
+      modeDefaults: { flight: { entryMin: 30, exitMin: 20 } },
+      ground: [
+        { from: 'CGQ', to: 'R', mode: 'shuttle', min: 60, waitMin: 20, cost: 80, km: 90,
+          serviceFrom: 420, serviceTo: 1260, note: '机场→雪场' },
+      ],
+      rail: [], cityCodes: [], airportOfAirline: { default: 'SZX' },
+    }), 'utf8');
+
+    // 手工写一条「旧模板」的缓存条目：tag 是裸日期、SQL 与 buildSqlPerDay 不同，
+    // 精确键必然命不中，只能靠 findEntryByLegs 按 (O-D, 日期) 捞回来。
+    const sql = "(SELECT '2026-12-10' AS tag, o.transfers, o.legs[1].dep_time AS dep,"
+      + " o.legs[1].arr_time AS arr, min(o.adult_total) AS adult_total,"
+      + " o.legs[1].segments[1].dep_airport AS dep_ap,"
+      + " o.legs[1].segments[len(o.legs[1].segments)].arr_airport AS arr_ap,"
+      + " min(o.adult_fare) AS adult_fare, max(o.seats) AS seats,"
+      + " min_by(o.flight_nos, o.adult_total) AS flight_nos,"
+      + " min_by(o.summary, o.adult_total) AS summary"
+      + " FROM flights(market := 'domestic', legs := [{'dep_city':'SZX','arr_city':'CGQ',"
+      + " 'date':'2026-12-10'},{'dep_city':'SZX','arr_city':'CGQ','date':'2026-12-11'}],"
+      + " cabin := 'economy') AS o GROUP BY 1,2,3,4,5,6,7 LIMIT 33)";
+    const raw = JSON.stringify({ item: { data: { truncated: false, row_count: 1,
+      source_count: 42, rows: [{
+        tag: '2026-12-10', transfers: 0, adult_total: 1040, adult_fare: 900,
+        adult_construction_fee: 50, adult_fuel: 90, seats: 9, stop_min: 0,
+        dep_ap: 'SZX', arr_ap: 'CGQ', flight_nos: ['CZ1234'],
+        summary: '深圳-长春，南航 CZ1234，2026-12-10 08:00:00 出发、2026-12-10 12:30:00 到达，'
+          + '直飞，总耗时 4 小时 30 分钟，成人票面价 CNY 900，余票 9 张。',
+      }, {
+        tag: '2026-12-11', transfers: 0, adult_total: 1100, adult_fare: 960,
+        adult_construction_fee: 50, adult_fuel: 90, seats: 5, stop_min: 0,
+        dep_ap: 'SZX', arr_ap: 'CGQ', flight_nos: ['CZ9999'],
+        summary: '深圳-长春，南航 CZ9999，2026-12-11 09:00:00 出发、2026-12-11 13:30:00 到达，'
+          + '直飞，总耗时 4 小时 30 分钟，成人票面价 CNY 960，余票 5 张。',
+      }] } } });
+    fs.writeFileSync(path.join(cdir, 'deadbeef.json'), JSON.stringify({
+      schema: 1, key: 'deadbeef', tool: 'getFlightTicketPrice', args: { sql }, sql,
+      label: 'SZX→CGQ 12-10 旧模板', createdAt: '2026-10-24T14:38:24.102Z',
+      ok: true, error: null, truncated: false, rowCount: 1, sourceCount: 42, raw,
+    }), 'utf8');
+
+    const built = LK.buildLegs({
+      origin: 'SZX', resort: 'R', networkFile: './network.json',
+      dates: { from: '2026-12-10', to: '2026-12-10' },
+      flightQueries: [{ from: 'SZX', to: 'CGQ', dates: ['2026-12-10'] }],
+      params: {
+        lodgingResort: 1, lodgingTransit: 1,
+        leave: { dayStart: '09:00', halfDayAt: '14:30', dayEnd: '20:30' }, leaveDays: 0,
+        resort: { name: 'R', dayOpen: '08:30', dayClose: '16:00' },
+      },
+    }, { baseDir: dir, cacheDir: cdir });
+
+    check('SQL 模板变更后，旧缓存按 (O-D, 日期) 仍然能被 legs.js 复用', () => {
+      const fl = built.legs.filter((l) => l.mode === 'flight');
+      assert.strictEqual(fl.length, 1, '应复用出 1 条航班腿，实际 ' + fl.length);
+      assert.strictEqual(fl[0].from, 'SZX');
+      assert.strictEqual(fl[0].to, 'CGQ', '真实机场要来自 dep_ap/arr_ap');
+      assert.strictEqual(fl[0].cost, 1040, '花费 = 票面 + 税费');
+      assert.strictEqual(built.stats.legacy.length, 1, '要走兜底路径并记录在 stats.legacy');
+      // 航班腿不存 date，日期编在 depAbs（天序号 × 1440 + 分钟）里
+      const days = [...new Set(fl.map((l) => Math.floor(l.depAbs / 1440)))];
+      assert.strictEqual(fl.length, 1, '只应留下 12-10 那一行，实际 ' + fl.length);
+      assert.strictEqual(days.length, 1, '全部腿必须落在同一天');
+      assert.strictEqual(days[0] * 1440 + 480, fl[0].depAbs,
+        '那天必须是 12-10（08:00 出发），12-11 的行不能被改贴过来');
+    });
+  }
+
   fs.rmSync(TMP, { recursive: true, force: true });
   console.log(process.exitCode ? '\n失败' : '\n全部通过（' + pass + ' 项）');
 })();

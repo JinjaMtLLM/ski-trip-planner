@@ -19,18 +19,29 @@ SHELL_DIR = os.path.join(HERE, 'shell')
 
 CFG = {}
 TABS = []          # [(页签 id, 页签文字, 算例目录（相对仓库根）, 雪场码)]
+TABFILES = {}      # 页签 id → 报告文件绝对路径（tabs[].html 优先，其次 dir/file，缺省 report.html）
 GROUPS = []        # [(组标签, 从第几个页签开始)]
 OUT = None
 
 
 def configure(cfg=None):
     """cfg 可以是配置 dict、配置文件路径，或 None（读默认 season.config.json）。"""
-    global CFG, TABS, GROUPS, OUT
+    global CFG, TABS, TABFILES, GROUPS, OUT
     if isinstance(cfg, str):
         cfg = B.load_cfg(cfg)
     cfg = cfg or B.load_cfg()
     CFG = cfg
     TABS = [(t['id'], t['label'], t['dir'], t['resort']) for t in cfg['tabs']]
+    # 交付页按目的地命名后就不叫 report.html 了。tabs[].html 是相对仓库根的
+    # 完整路径（报告被输出到 dist/ 时用）；不写则回落到 dir/file，再回落到
+    # dir/report.html，老配置零改动。
+    TABFILES = {}
+    for t in cfg['tabs']:
+        if t.get('html'):
+            TABFILES[t['id']] = os.path.join(cfg['root'], t['html'])
+        else:
+            TABFILES[t['id']] = os.path.join(cfg['root'], t['dir'],
+                                             t.get('file') or 'report.html')
     GROUPS = [(g['label'], int(g['at'])) for g in (cfg.get('groups') or [])]
     OUT = os.path.join(cfg['root'], cfg['out'])
     return cfg
@@ -114,8 +125,10 @@ def build_shell():
     k = frag.rfind('<footer>')
     frag = frag[:k] + note + '\n' + frag[k:]
 
+    # 概览页签的名字跟着场景走：雪季页叫「雪季对比」，单窗口对比页叫「春节对比」
+    _ov = CFG.get('texts', {}).get('overviewLabel') or '雪季对比'
     tb = ['<div class="tabbar">',
-          '  <button class="tb on" data-t="cmp">雪季对比</button>']
+          '  <button class="tb on" data-t="cmp">%s</button>' % _ov]
     for n, (sid, label, _dir, code) in enumerate(TABS):
         for gname, at in GROUPS:
             if at == n:
@@ -160,12 +173,13 @@ def build_shell():
 def payloads():
     out = []
     for sid, label, d, _code in TABS:
-        f = os.path.join(CFG['root'], d, 'report.html')
+        f = TABFILES.get(sid) or os.path.join(CFG['root'], d, 'report.html')
         raw = open(f, encoding='utf-8', newline='').read()
         body = esc_close(strip_raw(raw))
         assert '</script' not in body.lower(), (d, 'unescaped close tag')
         out.append('<script type="text/plain" data-emb="%s">%s</script>' % (sid, body))
-        print('  payload %-9s %-22s %8.2f MB' % (sid, d, len(body.encode()) / 1048576))
+        print('  payload %-9s %-22s %8.2f MB' % (sid, os.path.relpath(f, CFG['root']),
+                                                 len(body.encode()) / 1048576))
     return out
 
 
@@ -177,9 +191,17 @@ def main():
     print('payloads:')
     pl = payloads()
 
-    # 原始数据由 node 侧的 embed.js 塞（它还要写 #raw-manifest 与 sha256）
-    os.system('cd "%s" && node "%s"' % (CFG['root'].replace('\\', '/'),
-                                        os.path.join(HERE, 'attach.js').replace('\\', '/')))
+    # 原始数据由 node 侧的 embed.js 塞（它还要写 #raw-manifest 与 sha256）。
+    # 必须把配置路径传过去——attach.js 自己也读配置，不传就会回落到
+    # season.config.json，把另一份交付页覆盖掉（2027 春节对比页踩过）。
+    _cmd = 'cd "%s" && node "%s"' % (CFG['root'].replace('\\', '/'),
+                                     os.path.join(HERE, 'attach.js').replace('\\', '/'))
+    if CFG.get('_cfgFile'):
+        _cmd += ' "%s"' % CFG['_cfgFile'].replace('\\', '/')
+    if os.system(_cmd) != 0:
+        raise SystemExit('attach.js 失败（见上面的输出）')
+    if not os.path.exists(OUT):
+        raise SystemExit('attach 之后仍找不到 %s：检查配置的 out 与 _cfgFile' % OUT)
 
     s = open(OUT, encoding='utf-8', newline='').read()
     assert s.count('<!--EMB-PAYLOADS-->') == 1, 'placeholder 丢了'

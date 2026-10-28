@@ -574,12 +574,19 @@ $env:VARIFLIGHT_MCP_KEY = [Environment]::GetEnvironmentVariable('VARIFLIGHT_MCP_
 | `scripts/flight_query.js` | 航班检索（飞常准 MCP），按请假档位铺日期，输出可直接写入 config 的 `{ out, ret }` |
 | `scripts/variflight.js` | 飞常准 MCP 客户端：JSON-RPC/SSE 解析、SQL 构造、日期窗口、结果映射、缓存读写 |
 | `scripts/cache.js` | 查询结果缓存：按 (工具, 参数) 哈希落盘原始返回，带新鲜期、失败回退、过期清理；也可单独 `node scripts/cache.js list` 维护 |
+| `scripts/ota/` | **OTA 补数适配层**（submodule `third_party/ticket-monitoring`）：`cli.js` 唯一入口（`--check` 体检 / `--fetch` 抓数 / 默认只桥接）、`fetch.py` 抓数驱动（国内 fliggy·ctrip·tongcheng，国际携程 PC 列表）、`bridge.js` 把 OTA 明细写成 legs.js 认识的缓存条目。**不改第三方仓库**，也不覆盖真实飞常准条目。详见 `references/ota-adapter.md` |
+| `third_party/ticket-monitoring` | git submodule，钉在 `844c5e1`。只被 `scripts/ota/` import，不修改、不提交它的内部改动 |
 | `scripts/journal.js` | 运行记录：每次运行写 `runs/<runId>.json`，含命令行、每步输入输出、失败 SQL、缓存 key；`list` / `show` / `clear` |
 | `scripts/mcp_config.js` | 一条命令把飞常准 MCP 合并写进 agent 的 MCP 配置（路径见 `scripts/mcp_json.js`），带备份与 `--check` / `--print` / `--remove` |
 | `scripts/mcp_json.js` | MCP 配置文件的路径解析：`SKI_MCP_CONFIG` → `~/.workbuddy/mcp.json` → `~/.workbuddy-ai/mcp.json`，读写共用 |
 | `scripts/amap_route.js` | 高德驾车用时查询，输出含预留的 `toResortMinutes`。兜底用，不是主路径 |
 | `scripts/rail_12306.js` | **12306 高铁时刻查询**：默认 1 QPS 节流，识别限流（302 到错误页，或跟随跳转后的 200 + HTML），预售期外直接拒绝。`--list` 有票查询、`--verify` 按逐站时刻校验车次、`--stops` 打印全列停站 |
-| `scripts/wendao.js` | 携程问道的请求与解析实现，供需要编程调用的场景使用。主流程不经过它，粗筛直接按 `references/wendao-prompts.md` 发原始请求 |
+| `scripts/wendao.js` | 携程问道的请求实现。两种用法：编程调用；或 **CLI 取原文**（`--from/--to/--date`，只输出原文不做解析）。主流程粗筛仍按 `references/wendao-prompts.md` 发原始请求 |
+| `scripts/validate_extract.js` | **抽取结果的校验 + 算术 + 写盘（零判断）**：schema 校验 → 硬证据（航班号/票面价在原文、且价格与本方案全部航班号落在同一方案块内）→ 补 tax/total/durationMin → 写 fares.csv / runs.jsonl / latest.md。失败落 `quarantine/`，主表不动 |
+| `scripts/verify_fares.js` | **主表证据审计**：对已写入的 fares.csv 逐行回原文取证，硬证据（编造/串价/算术）失败即退出码 1，软证据（耗时/到达表达）只警告。可跑全历史 |
+| `scripts/negtest_gate.js` | **校验门自证**：从最新抽取结果现场生成 10 类注入错误（编造价/编造航班号/串价/脏城市/非法枚举/自相矛盾/缺字段…），每类都必须被拒绝。改完证据逻辑必跑，10/10 才算过 |
+| `scripts/build_baseline.js` | **方案基线**：从 fares.csv 聚合出「应该有哪些方案」，`--check` 比对最近一批并列出缺席项。每日模式防「缺了几条却不自知」 |
+| `scripts/should_run.js` | **多班次早退判定**：每日 3 班次（09/12/16）共用。今日已有达标成功（`state=ok` ∧ `schemes≥10` ∧ `coreHit≥4/5`）则退出码 10，后续班次直接结束、不耗配额 |
 | `scripts/amap.js` | 地理编码与驾车路径规划实现，被上面两个路线脚本共用 |
 | `scripts/keys.js` | 凭据登记表（三档 role）与缺 key 引导文案，所有脚本共用 |
 | `scripts/doctor.js` | 凭据检查：默认零成本；`--probe` 只探免费项；`--probe-wendao` 才测问道；`--manual` 输出手动录入清单 |
@@ -587,7 +594,11 @@ $env:VARIFLIGHT_MCP_KEY = [Environment]::GetEnvironmentVariable('VARIFLIGHT_MCP_
 | `references/enumeration.md` | 枚举算法详解：数据模型、五步实现、剪枝正确性、已知局限 |
 | `references/case-schema.md` | `case.json` 逐字段说明（枚举管线的输入） |
 | `references/wendao-prompts.md` | 携程问道的提示词库：一次问全的机场对比提示词、执飞校验提示词、四条写法原则与字段可信度 |
+| `references/wendao-fare-watch-runbook.md` | **票价巡检判读手册**：四种 state 判据、12 列字段规则、七条抽取铁律、排版速查、比价前先比覆盖率 |
+| `references/wendao-extract-contract.md` | **抽取契约（NL → JSON）**：subagent 只搬事实不算术；schema v1 逐字段规则；三条铁律（不许猜/不许静默丢/不做换算）；抽取器 prompt；同一份 raw 重跑测一致性 |
+| `references/wendao-daily-ops.md` | **每日 1 次的编排手册**：实测成功率分层（L1 100% / L2 84% / L3 79%）、四道闸门与重试预算（缺口率 21%→0.9%）、失败恢复与定向补问、汇报五项、时间选择 |
 | `references/intake.md` | 问答脚本：该问什么、选项怎么给、骨架确认卡长什么样 |
 | `references/config-schema.md` | config.json 逐字段说明与可复制骨架 |
 | `references/manual-flights.md` | 手动录入模式：不配任何 key 时怎么收集航班、可直接运行的完整示例、四个易错点 |
+| `references/ota-adapter.md` | **OTA 补数适配层**：submodule 用法与三条禁令、归一字段与含税口径（国内裸价 vs 国际含税）、筛选语义复刻、缓存条目伪造、等价性验证数据、已知局限与排错 |
 | `references/algorithm.md` | 计算模型、边界条件、敏感度检查方法 |

@@ -100,6 +100,7 @@ const CAL = H.resolve({
   calendar: P.calendar,
   holidays: P.holidays,
   workdays: P.workdays,
+  holidaysLabel: P.holidaysLabel,
 });
 if (CAL.enabled) RULE.cal = CAL.set;
 
